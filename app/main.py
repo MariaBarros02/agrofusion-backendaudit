@@ -1,19 +1,27 @@
+"""
+Punto de entrada principal de la aplicación FastAPI.
+
+Inicializa la aplicación, configura middlewares globales
+y registra los routers de la API.
+"""
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-from app.routes import audit
+from app.routes.audit import router as router_audit
 
 app = FastAPI(
     title="API Inmero - Backend Auditory Agrofusion",
-    version="1.0.0"
+    version="1.0.0",
+    description="API de auditoría para el backend de Agrofusion, encargada del registro y consulta de eventos y errores."
 )
-
+# Orígenes permitidos para solicitudes CORS (frontend)
 origins = [
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
 ]
-
+# Middleware CORS para permitir comunicación entre frontend y backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -21,8 +29,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app.include_router(audit.router)
+# Registro de rutas relacionadas con auditoría
+app.include_router(router_audit)
 
 if __name__ == "__main__":
     uvicorn.run(
