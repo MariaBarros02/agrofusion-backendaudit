@@ -86,6 +86,10 @@ class Users(Base):
         DateTime(timezone=True),
         server_default=func.now()
     )
+    
+    #Número de identidad
+    identity_number= Column(Text, nullable=False, unique=True)
+    
     # Versión del registro para control de concurrencia
     row_version = Column(Integer, default=1)
 

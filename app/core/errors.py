@@ -14,8 +14,7 @@ def audit_error(code: str, status_code: int, meta: Optional[Dict[str, Any]] = No
         Lanza una excepción HTTP con un formato de error estandarizado.
 
         Args:
-                code (str): Código interno del error.
-                status_code (int): Código HTTP a retornar.
+                code (str): Código interno del error, no es un número sino una cadena de texto en inglés (ejemplo: AUTH_FAILED_TRANSACTION).
                 meta (dict, opcional): Información adicional del error.
 
         Returns:
