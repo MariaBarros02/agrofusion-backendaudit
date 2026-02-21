@@ -14,15 +14,16 @@ class AuditRepository:
     Repositorio encargado del acceso a datos para auditoría
     y proyectos externos.
     """
-    def get_term_by_code(self, db, code):
+    def get_term_by_code(self, db, code, vocabulary):
         """
         Obtiene un término de catálogo activo a partir de su código.
         """
         return (
             db.query(CatTerm)
+            .join(CatTerm.vocabulary)
             .filter(
                 CatTerm.code == code,
-                CatTerm.is_enabled.is_(True)
+                CatTerm.vocabulary.has(vocabulary_code=vocabulary)
             )
             .first()
         )
@@ -64,11 +65,11 @@ class AuditRepository:
         for err in errors:
         
             
-            context_term = self.get_term_by_code(db, err.context)
+            context_term = self.get_term_by_code(db, err.context, "SYSTEM_ACTION")
             if not context_term:
                 raise audit_error("CONTEXT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
 
-            severity_term = self.get_term_by_code(db, err.severity)
+            severity_term = self.get_term_by_code(db, err.severity, "SEVERITY_GRADE")
             if not severity_term:
                 raise audit_error("SEVERITY_NOT_FOUND", status.HTTP_404_NOT_FOUND)
 

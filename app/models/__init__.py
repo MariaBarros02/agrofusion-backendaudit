@@ -6,6 +6,7 @@ correctamente los modelos al importar el paquete `app.models`.
 """
 
 from app.models.users import Users
+from app.models.af_error_log import AfErrorLog
 from app.models.cat_terms import CatTerm
 from app.models.cat_vocabularies import CatVocabulary
 from app.models.af_external_projects import AfExternalProject

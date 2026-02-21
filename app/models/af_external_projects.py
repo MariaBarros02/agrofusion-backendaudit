@@ -16,6 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
+from sqlalchemy import LargeBinary
 
 from app.core.database import Base
 
@@ -46,12 +47,14 @@ class AfExternalProject(Base):
     project_name = Column(String(120))
     # Nombre del cliente propietario del proyecto
     client_name = Column(String(120))
-    # Nombre de la imagen del proyecto externo
-    project_image = Column(Text)
+    # Nombre del cliente propietario del proyecto
+    project_image = Column(LargeBinary)
 
-    #Extension de la imagen del proyecto externo
+    #Nombre de la extension de la imagen
     project_image_mime_type = Column(Text)
 
+    #Nombre de la imagen
+    project_image_name = Column(Text)
     # Descripción general del proyecto externo
     description = Column(Text)
     # Estado del proyecto, referenciado desde el catálogo de términos
