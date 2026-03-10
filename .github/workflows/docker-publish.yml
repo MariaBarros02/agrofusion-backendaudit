@@ -1,0 +1,32 @@
+name: Construir y Subir Imagen a GHCR
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Descargar el código fuente
+        uses: actions/checkout@v4
+
+      - name: Iniciar sesión en GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construir y subir imagen Docker
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/mariabarros02/agrofusion-backendaudit:latest
