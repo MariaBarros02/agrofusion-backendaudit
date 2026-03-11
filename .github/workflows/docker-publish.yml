@@ -29,4 +29,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/MariaBarros02/agrofusion-backendaudit:latest
+          tags: ghcr.io/mariabarros02/agrofusion-backendaudit:latest
