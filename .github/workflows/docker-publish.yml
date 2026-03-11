@@ -3,7 +3,7 @@ name: Construir y Subir Imagen a GHCR
 on:
   push:
     branches:
-      - develop
+      - main
 
 jobs:
   build-and-push:
