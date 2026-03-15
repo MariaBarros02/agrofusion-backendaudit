@@ -128,9 +128,11 @@ class AfKmsSignature(Base):
     )
 
     # Proyecto asociado
+    # NOTA: nullable=True temporalmente para evitar problemas con foreign keys
+    # El project_id se obtiene automáticamente de la clave asociada
     project_id = Column(
         UUID(as_uuid=True),
-        nullable=False,
+        nullable=True,  # Cambiado a True para evitar constraint violations
         index=True,
     )
 

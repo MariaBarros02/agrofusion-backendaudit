@@ -118,7 +118,6 @@ class CertificateResponse(BaseModel):
     valid_to: datetime
     fingerprint: str
     issued_at: datetime
-    created_at: datetime
     
     class Config:
         from_attributes = True
@@ -211,9 +210,11 @@ class SignatureVerifyResponse(BaseModel):
 # ==================== Schemas para Rotación de Claves ====================
 
 class KeyRotationRequest(BaseModel):
-    """Request para rotar una clave criptográfica."""
+    """Request para rotar una clave criptográfica.
     
-    key_id: UUID = Field(..., description="ID de la clave a rotar")
+    NOTA: El key_id viene en la URL como parámetro de ruta, no en el body.
+    """
+    
     rotation_reason: str = Field(..., description="Razón de la rotación: scheduled, compromised, manual, policy")
     grace_period_days: int = Field(default=30, ge=0, le=365, description="Período de gracia en días")
     

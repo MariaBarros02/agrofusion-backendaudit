@@ -7,8 +7,11 @@ validación y rotación de claves.
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
 from uuid import UUID
+import hashlib
+import traceback
 
 from app.core.database import get_db
 from app.services.kms_service import KmsService
@@ -182,29 +185,44 @@ def create_certificate(
     """Registra un certificado X.509 emitido por una CA."""
     service = KmsService()
     
-    # Validar que la clave exista
-    key = service.kms_repo.get_key_by_id(db, request.key_id)
-    if not key:
-        raise audit_error("KEY_NOT_FOUND", status.HTTP_404_NOT_FOUND)
-    
-    # Calcular fingerprint del certificado
-    import hashlib
-    cert_bytes = request.certificate_pem.encode()
-    fingerprint = hashlib.sha256(cert_bytes).hexdigest()
-    
-    certificate = service.kms_repo.create_certificate(
-        db=db,
-        key_id=request.key_id,
-        certificate_pem=request.certificate_pem,
-        serial_number=request.serial_number,
-        subject=request.subject,
-        issuer=request.issuer,
-        valid_from=request.valid_from,
-        valid_to=request.valid_to,
-        fingerprint=fingerprint,
-    )
-    
-    return certificate
+    try:
+        # Validar que la clave exista
+        key = service.kms_repo.get_key_by_id(db, request.key_id)
+        if not key:
+            raise audit_error("KEY_NOT_FOUND", status.HTTP_404_NOT_FOUND)
+        
+        # Calcular fingerprint del certificado
+        cert_bytes = request.certificate_pem.encode()
+        fingerprint = hashlib.sha256(cert_bytes).hexdigest()
+        
+        certificate = service.kms_repo.create_certificate(
+            db=db,
+            key_id=request.key_id,
+            certificate_pem=request.certificate_pem,
+            serial_number=request.serial_number,
+            subject=request.subject,
+            issuer=request.issuer,
+            valid_from=request.valid_from,
+            valid_to=request.valid_to,
+            fingerprint=fingerprint,
+        )
+        
+        return certificate
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating certificate: {str(e)}")
+        print(traceback.format_exc())
+        
+        # Manejar errores de integridad (duplicados, etc.)
+        if isinstance(e, IntegrityError):
+            db.rollback()
+            error_msg = str(e.orig) if hasattr(e, 'orig') else str(e)
+            if "fingerprint" in error_msg.lower() or "unique" in error_msg.lower():
+                raise audit_error("CERTIFICATE_ALREADY_EXISTS", status.HTTP_409_CONFLICT, {"error": "Un certificado con el mismo fingerprint ya existe"})
+            raise audit_error("CERTIFICATE_CREATION_FAILED", status.HTTP_400_BAD_REQUEST, {"error": error_msg})
+        
+        raise audit_error("CERTIFICATE_CREATION_FAILED", status.HTTP_500_INTERNAL_SERVER_ERROR, {"error": str(e)})
 
 
 @router.get(

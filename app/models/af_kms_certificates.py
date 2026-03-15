@@ -98,13 +98,6 @@ class AfKmsCertificate(Base):
         server_default=func.now(),
     )
 
-    # Fecha de creación del registro
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
     # Índices para optimizar búsquedas
     __table_args__ = (
         Index("ix_kms_cert_key", "key_id"),

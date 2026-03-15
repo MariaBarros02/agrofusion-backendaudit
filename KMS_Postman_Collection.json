@@ -146,6 +146,21 @@
 				},
 				{
 					"name": "5. Rotar Clave",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validar que key_id exista",
+									"const keyId = pm.collectionVariables.get('key_id');",
+									"if (!keyId || keyId === '') {",
+									"    throw new Error('ERROR: Primero debes crear una clave. Ejecuta \"1. Crear Clave Criptográfica\" primero.');",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
 						"method": "POST",
 						"header": [
@@ -160,14 +175,19 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"rotation_reason\": \"scheduled\",\n  \"grace_period_days\": 30\n}"
+							"raw": "{\n  \"rotation_reason\": \"scheduled\",\n  \"grace_period_days\": 30\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
 						},
 						"url": {
 							"raw": "{{base_url}}/kms/keys/{{key_id}}/rotate",
 							"host": ["{{base_url}}"],
 							"path": ["kms", "keys", "{{key_id}}", "rotate"]
 						},
-						"description": "Rota una clave criptográfica generando una nueva"
+						"description": "Rota una clave criptográfica generando una nueva.\n\nNOTA: El key_id viene de la URL (variable {{key_id}}), NO se envía en el body.\n\nOpciones para rotation_reason:\n- scheduled: Rotación programada\n- compromised: Clave comprometida\n- manual: Rotación manual\n- policy: Por política de seguridad"
 					},
 					"response": []
 				},
