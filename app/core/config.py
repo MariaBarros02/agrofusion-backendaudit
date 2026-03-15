@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     smtp_user: str
     smtp_password: str
     smtp_from_name: str
+    sso_private_key_path: str
 
     # Configuración de Pydantic Settings:
     # - Carga variables desde el archivo .env según el entorno

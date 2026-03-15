@@ -1,0 +1,344 @@
+"""
+Repositorio para acceso a datos del módulo KMS.
+
+Maneja todas las operaciones de base de datos relacionadas con
+claves criptográficas, certificados, firmas y rotaciones.
+"""
+
+from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_, func
+from typing import List, Optional
+from uuid import UUID
+from datetime import datetime
+
+from app.models.af_kms_keys import AfKmsKey, KeyStatus, KeyAlgorithm, KeyPurpose
+from app.models.af_kms_certificates import AfKmsCertificate
+from app.models.af_kms_signatures import AfKmsSignature
+from app.models.af_kms_signature_validations import AfKmsSignatureValidation
+from app.models.af_kms_key_rotations import AfKmsKeyRotation, RotationReason
+
+
+class KmsRepository:
+    """
+    Repositorio encargado del acceso a datos para el módulo KMS.
+    """
+
+    # ==================== Operaciones con Claves ====================
+
+    def create_key(
+        self,
+        db: Session,
+        *,
+        project_id: UUID,
+        key_alias: str,
+        algorithm: KeyAlgorithm,
+        key_length: int,
+        key_purpose: KeyPurpose,
+        public_key: str,
+        key_fingerprint: str,
+        kms_key_reference: Optional[str],
+        valid_to: datetime,
+        created_by: UUID,
+        key_version: int = 1,
+    ) -> AfKmsKey:
+        """Crea un nuevo registro de clave criptográfica."""
+        key = AfKmsKey(
+            project_id=project_id,
+            key_alias=key_alias,
+            algorithm=algorithm,
+            key_length=key_length,
+            key_purpose=key_purpose,
+            public_key=public_key,
+            key_fingerprint=key_fingerprint,
+            kms_key_reference=kms_key_reference,
+            status=KeyStatus.ACTIVE,
+            key_version=key_version,
+            valid_to=valid_to,
+            created_by=created_by,
+        )
+        db.add(key)
+        db.commit()
+        db.refresh(key)
+        return key
+
+    def get_key_by_id(self, db: Session, key_id: UUID) -> Optional[AfKmsKey]:
+        """Obtiene una clave por su ID."""
+        return db.query(AfKmsKey).filter(AfKmsKey.key_id == key_id).first()
+
+    def get_key_by_fingerprint(
+        self, db: Session, fingerprint: str
+    ) -> Optional[AfKmsKey]:
+        """Obtiene una clave por su fingerprint."""
+        return (
+            db.query(AfKmsKey)
+            .filter(AfKmsKey.key_fingerprint == fingerprint)
+            .first()
+        )
+
+    def get_active_keys_by_project(
+        self, db: Session, project_id: UUID, key_purpose: Optional[KeyPurpose] = None
+    ) -> List[AfKmsKey]:
+        """Obtiene claves activas de un proyecto."""
+        query = db.query(AfKmsKey).filter(
+            and_(
+                AfKmsKey.project_id == project_id,
+                AfKmsKey.status == KeyStatus.ACTIVE,
+                AfKmsKey.valid_to > func.now(),
+            )
+        )
+        if key_purpose:
+            query = query.filter(AfKmsKey.key_purpose.in_([key_purpose, KeyPurpose.BOTH]))
+        return query.all()
+
+    def get_keys_by_project(
+        self, db: Session, project_id: UUID, status: Optional[KeyStatus] = None
+    ) -> List[AfKmsKey]:
+        """Obtiene todas las claves de un proyecto."""
+        query = db.query(AfKmsKey).filter(AfKmsKey.project_id == project_id)
+        if status:
+            query = query.filter(AfKmsKey.status == status)
+        return query.order_by(AfKmsKey.created_at.desc()).all()
+
+    def update_key_status(
+        self, db: Session, key_id: UUID, status: KeyStatus, rotated_at: Optional[datetime] = None
+    ) -> Optional[AfKmsKey]:
+        """Actualiza el estado de una clave."""
+        key = self.get_key_by_id(db, key_id)
+        if key:
+            key.status = status
+            if rotated_at:
+                key.rotated_at = rotated_at
+            db.commit()
+            db.refresh(key)
+        return key
+
+    def set_key_supersedes(
+        self, db: Session, old_key_id: UUID, new_key_id: UUID, grace_period_end: datetime
+    ) -> None:
+        """Establece la relación de reemplazo entre claves."""
+        old_key = self.get_key_by_id(db, old_key_id)
+        if old_key:
+            old_key.supersedes_key_id = new_key_id
+            old_key.grace_period_end = grace_period_end
+            db.commit()
+
+    def get_key_version(self, db: Session, project_id: UUID, key_alias: str) -> int:
+        """Obtiene la siguiente versión de clave para un alias."""
+        max_version = (
+            db.query(func.max(AfKmsKey.key_version))
+            .filter(
+                and_(
+                    AfKmsKey.project_id == project_id,
+                    AfKmsKey.key_alias == key_alias,
+                )
+            )
+            .scalar()
+        )
+        return (max_version or 0) + 1
+
+    # ==================== Operaciones con Certificados ====================
+
+    def create_certificate(
+        self,
+        db: Session,
+        *,
+        key_id: UUID,
+        certificate_pem: str,
+        serial_number: str,
+        subject: str,
+        issuer: str,
+        valid_from: datetime,
+        valid_to: datetime,
+        fingerprint: str,
+    ) -> AfKmsCertificate:
+        """Crea un nuevo registro de certificado."""
+        certificate = AfKmsCertificate(
+            key_id=key_id,
+            certificate_pem=certificate_pem,
+            serial_number=serial_number,
+            subject=subject,
+            issuer=issuer,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            fingerprint=fingerprint,
+        )
+        db.add(certificate)
+        db.commit()
+        db.refresh(certificate)
+        return certificate
+
+    def get_certificate_by_key_id(
+        self, db: Session, key_id: UUID
+    ) -> Optional[AfKmsCertificate]:
+        """Obtiene el certificado asociado a una clave."""
+        return (
+            db.query(AfKmsCertificate)
+            .filter(AfKmsCertificate.key_id == key_id)
+            .order_by(AfKmsCertificate.issued_at.desc())
+            .first()
+        )
+
+    def get_certificate_by_id(
+        self, db: Session, certificate_id: UUID
+    ) -> Optional[AfKmsCertificate]:
+        """Obtiene un certificado por su ID."""
+        return (
+            db.query(AfKmsCertificate)
+            .filter(AfKmsCertificate.certificate_id == certificate_id)
+            .first()
+        )
+
+    # ==================== Operaciones con Firmas ====================
+
+    def create_signature(
+        self,
+        db: Session,
+        *,
+        key_id: UUID,
+        document_hash: str,
+        hash_algorithm: str,
+        digital_signature: str,
+        signature_format: str,
+        rfc3161_timestamp: Optional[str],
+        document_id: Optional[UUID],
+        document_type: Optional[str],
+        signer_user_id: Optional[UUID],
+        signing_reason: Optional[str],
+        project_id: UUID,
+    ) -> AfKmsSignature:
+        """Crea un nuevo registro de firma digital."""
+        signature = AfKmsSignature(
+            key_id=key_id,
+            document_hash=document_hash,
+            hash_algorithm=hash_algorithm,
+            digital_signature=digital_signature,
+            signature_format=signature_format,
+            rfc3161_timestamp=rfc3161_timestamp,
+            document_id=document_id,
+            document_type=document_type,
+            signer_user_id=signer_user_id,
+            signing_reason=signing_reason,
+            project_id=project_id,
+        )
+        db.add(signature)
+        db.commit()
+        db.refresh(signature)
+        return signature
+
+    def get_signature_by_id(
+        self, db: Session, signature_id: UUID
+    ) -> Optional[AfKmsSignature]:
+        """Obtiene una firma por su ID."""
+        return (
+            db.query(AfKmsSignature)
+            .filter(AfKmsSignature.signature_id == signature_id)
+            .first()
+        )
+
+    def get_signatures_by_document(
+        self, db: Session, document_id: UUID
+    ) -> List[AfKmsSignature]:
+        """Obtiene todas las firmas de un documento."""
+        return (
+            db.query(AfKmsSignature)
+            .filter(AfKmsSignature.document_id == document_id)
+            .order_by(AfKmsSignature.signed_at.desc())
+            .all()
+        )
+
+    def get_signatures_by_project(
+        self, db: Session, project_id: UUID, limit: int = 100, offset: int = 0
+    ) -> List[AfKmsSignature]:
+        """Obtiene firmas de un proyecto con paginación."""
+        return (
+            db.query(AfKmsSignature)
+            .filter(AfKmsSignature.project_id == project_id)
+            .order_by(AfKmsSignature.signed_at.desc())
+            .limit(limit)
+            .offset(offset)
+            .all()
+        )
+
+    def count_signatures_by_project(self, db: Session, project_id: UUID) -> int:
+        """Cuenta el total de firmas de un proyecto."""
+        return (
+            db.query(func.count(AfKmsSignature.signature_id))
+            .filter(AfKmsSignature.project_id == project_id)
+            .scalar()
+        )
+
+    # ==================== Operaciones con Validaciones ====================
+
+    def create_validation(
+        self,
+        db: Session,
+        *,
+        signature_id: UUID,
+        validation_result: str,
+        validation_reason: Optional[str],
+        validated_by: Optional[UUID],
+    ) -> AfKmsSignatureValidation:
+        """Crea un nuevo registro de validación."""
+        validation = AfKmsSignatureValidation(
+            signature_id=signature_id,
+            validation_result=validation_result,
+            validation_reason=validation_reason,
+            validated_by=validated_by,
+        )
+        db.add(validation)
+        db.commit()
+        db.refresh(validation)
+        return validation
+
+    def get_validations_by_signature(
+        self, db: Session, signature_id: UUID
+    ) -> List[AfKmsSignatureValidation]:
+        """Obtiene todas las validaciones de una firma."""
+        return (
+            db.query(AfKmsSignatureValidation)
+            .filter(AfKmsSignatureValidation.signature_id == signature_id)
+            .order_by(AfKmsSignatureValidation.validated_at.desc())
+            .all()
+        )
+
+    # ==================== Operaciones con Rotaciones ====================
+
+    def create_rotation(
+        self,
+        db: Session,
+        *,
+        old_key_id: UUID,
+        new_key_id: UUID,
+        rotation_reason: RotationReason,
+        grace_period_days: int,
+        rotated_by: UUID,
+    ) -> AfKmsKeyRotation:
+        """Crea un nuevo registro de rotación."""
+        rotation = AfKmsKeyRotation(
+            old_key_id=old_key_id,
+            new_key_id=new_key_id,
+            rotation_reason=rotation_reason,
+            grace_period_days=grace_period_days,
+            rotated_by=rotated_by,
+        )
+        db.add(rotation)
+        db.commit()
+        db.refresh(rotation)
+        return rotation
+
+    def get_rotations_by_key(
+        self, db: Session, key_id: UUID
+    ) -> List[AfKmsKeyRotation]:
+        """Obtiene todas las rotaciones relacionadas con una clave."""
+        return (
+            db.query(AfKmsKeyRotation)
+            .filter(
+                or_(
+                    AfKmsKeyRotation.old_key_id == key_id,
+                    AfKmsKeyRotation.new_key_id == key_id,
+                )
+            )
+            .order_by(AfKmsKeyRotation.rotated_at.desc())
+            .all()
+        )
+

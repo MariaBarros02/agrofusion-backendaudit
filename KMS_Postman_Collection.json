@@ -1,0 +1,476 @@
+{
+	"info": {
+		"name": "KMS Module - Agrofusion Audit",
+		"description": "Colección de endpoints para el módulo KMS (Key Management Service)\n\n⚠️ IMPORTANTE: Antes de usar esta colección, debes:\n1. Obtener un token JWT desde el módulo de autenticación (auth)\n2. Configurar la variable 'access_token' en esta colección con tu token\n3. El token debe tener el formato: Bearer <token>\n\nPara obtener el token, usa el endpoint de login del módulo auth.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"exec": [
+					"// Validar que access_token esté configurado",
+					"const accessToken = pm.collectionVariables.get('access_token');",
+					"if (!accessToken || accessToken === '') {",
+					"    console.warn('⚠️ ADVERTENCIA: access_token no está configurado. Configura la variable access_token con tu token JWT.');",
+					"    console.warn('   Puedes obtener el token desde el endpoint de login del módulo auth.');",
+					"}"
+				],
+				"type": "text/javascript"
+			}
+		}
+	],
+	"item": [
+		{
+			"name": "Gestión de Claves",
+			"item": [
+				{
+					"name": "1. Crear Clave Criptográfica",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Capturar key_id automáticamente de la respuesta",
+									"if (pm.response.code === 201) {",
+									"    const response = pm.response.json();",
+									"    if (response.key_id) {",
+									"        pm.collectionVariables.set('key_id', response.key_id);",
+									"        console.log('✓ key_id guardado:', response.key_id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"project_id\": \"{{project_id}}\",\n  \"key_alias\": \"test-key-2025\",\n  \"algorithm\": \"RSA-2048\",\n  \"key_purpose\": \"signing\",\n  \"valid_to\": \"2026-12-31T23:59:59Z\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/keys",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "keys"]
+						},
+						"description": "Crea una nueva clave criptográfica para un proyecto. El key_id se guarda automáticamente."
+					},
+					"response": []
+				},
+				{
+					"name": "2. Obtener Clave por ID",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/keys/{{key_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "keys", "{{key_id}}"]
+						},
+						"description": "Obtiene información pública de una clave criptográfica"
+					},
+					"response": []
+				},
+				{
+					"name": "3. Listar Claves de Proyecto",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/keys?project_id={{project_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "keys"],
+							"query": [
+								{
+									"key": "project_id",
+									"value": "{{project_id}}"
+								},
+								{
+									"key": "status_filter",
+									"value": "",
+									"disabled": true
+								}
+							]
+						},
+						"description": "Lista todas las claves de un proyecto"
+					},
+					"response": []
+				},
+				{
+					"name": "4. Obtener Claves Activas",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/keys/project/{{project_id}}/active",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "keys", "project", "{{project_id}}", "active"],
+							"query": [
+								{
+									"key": "key_purpose",
+									"value": "",
+									"disabled": true
+								}
+							]
+						},
+						"description": "Obtiene todas las claves activas y válidas de un proyecto"
+					},
+					"response": []
+				},
+				{
+					"name": "5. Rotar Clave",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"rotation_reason\": \"scheduled\",\n  \"grace_period_days\": 30\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/keys/{{key_id}}/rotate",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "keys", "{{key_id}}", "rotate"]
+						},
+						"description": "Rota una clave criptográfica generando una nueva"
+					},
+					"response": []
+				},
+				{
+					"name": "6. Historial de Rotaciones",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/keys/{{key_id}}/rotations",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "keys", "{{key_id}}", "rotations"]
+						},
+						"description": "Obtiene el historial de rotaciones de una clave"
+					},
+					"response": []
+				}
+			],
+			"description": "Endpoints para gestión de claves criptográficas"
+		},
+		{
+			"name": "Firmas Digitales",
+			"item": [
+				{
+					"name": "1. Crear Firma Digital",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validar que key_id exista",
+									"const keyId = pm.collectionVariables.get('key_id');",
+									"if (!keyId || keyId === '') {",
+									"    throw new Error('ERROR: Primero debes crear una clave. Ejecuta \"1. Crear Clave Criptográfica\" primero.');",
+									"}",
+									"",
+									"// Calcular hash del documento automáticamente",
+									"const document = pm.collectionVariables.get('document_content') || 'Documento de prueba';",
+									"const hash = CryptoJS.SHA256(document).toString();",
+									"pm.collectionVariables.set('document_hash', hash);",
+									"console.log('✓ Hash calculado:', hash);",
+									"console.log('✓ Usando key_id:', keyId);"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Capturar signature_id y digital_signature automáticamente",
+									"if (pm.response.code === 201) {",
+									"    const response = pm.response.json();",
+									"    if (response.signature_id) {",
+									"        pm.collectionVariables.set('signature_id', response.signature_id);",
+									"        console.log('✓ signature_id guardado:', response.signature_id);",
+									"    }",
+									"    if (response.digital_signature) {",
+									"        pm.collectionVariables.set('digital_signature', response.digital_signature);",
+									"        console.log('✓ digital_signature guardado');",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"document_hash\": \"{{document_hash}}\",\n  \"key_id\": \"{{key_id}}\",\n  \"hash_algorithm\": \"SHA-256\",\n  \"signature_format\": \"PKCS7\",\n  \"include_timestamp\": true,\n  \"document_type\": \"test_document\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/signatures",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures"]
+						},
+						"description": "Firma digitalmente un documento usando una clave del KMS. El hash se calcula automáticamente."
+					},
+					"response": []
+				},
+				{
+					"name": "2. Validar Firma Digital",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"document_hash\": \"{{document_hash}}\",\n  \"digital_signature\": \"{{digital_signature}}\",\n  \"signature_id\": \"{{signature_id}}\",\n  \"hash_algorithm\": \"SHA-256\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/signatures/verify",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures", "verify"]
+						},
+						"description": "Valida una firma digital verificando su integridad criptográfica"
+					},
+					"response": []
+				},
+				{
+					"name": "3. Obtener Firma por ID",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/signatures/{{signature_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures", "{{signature_id}}"]
+						},
+						"description": "Obtiene información detallada de una firma digital"
+					},
+					"response": []
+				},
+				{
+					"name": "4. Listar Firmas de Proyecto",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/signatures?project_id={{project_id}}&limit=10&offset=0",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures"],
+							"query": [
+								{
+									"key": "project_id",
+									"value": "{{project_id}}"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "offset",
+									"value": "0"
+								}
+							]
+						},
+						"description": "Lista las firmas digitales de un proyecto con paginación"
+					},
+					"response": []
+				},
+				{
+					"name": "5. Obtener Firmas de Documento",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/signatures/document/{{document_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures", "document", "{{document_id}}"]
+						},
+						"description": "Obtiene todas las firmas asociadas a un documento específico"
+					},
+					"response": []
+				}
+			],
+			"description": "Endpoints para firma y validación de documentos"
+		},
+		{
+			"name": "Certificados",
+			"item": [
+				{
+					"name": "Registrar Certificado X.509",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"key_id\": \"{{key_id}}\",\n  \"certificate_pem\": \"-----BEGIN CERTIFICATE-----\\n...\\n-----END CERTIFICATE-----\",\n  \"serial_number\": \"1234567890\",\n  \"subject\": \"CN=Test Certificate\",\n  \"issuer\": \"CN=Test CA\",\n  \"valid_from\": \"2025-01-01T00:00:00Z\",\n  \"valid_to\": \"2026-12-31T23:59:59Z\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/certificates",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "certificates"]
+						},
+						"description": "Registra un certificado X.509 asociado a una clave del KMS"
+					},
+					"response": []
+				},
+				{
+					"name": "Obtener Certificado de Clave",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/certificates/key/{{key_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "certificates", "key", "{{key_id}}"]
+						},
+						"description": "Obtiene el certificado más reciente asociado a una clave"
+					},
+					"response": []
+				}
+			],
+			"description": "Endpoints para gestión de certificados X.509"
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:9000",
+			"type": "string"
+		},
+		{
+			"key": "access_token",
+			"value": "",
+			"type": "string",
+			"description": "Token JWT de acceso. Obtener desde el endpoint de login del módulo de auth."
+		},
+		{
+			"key": "user_id",
+			"value": "03e36d9e-400d-4d91-bee9-436a07ccc9dc",
+			"type": "string",
+			"description": "ID del usuario (Alejandra) - usado internamente"
+		},
+		{
+			"key": "project_id",
+			"value": "123e4567-e89b-12d3-a456-426614174000",
+			"type": "string"
+		},
+		{
+			"key": "key_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "signature_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "document_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "document_hash",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "digital_signature",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "document_content",
+			"value": "Documento de prueba",
+			"type": "string"
+		}
+	]
+}

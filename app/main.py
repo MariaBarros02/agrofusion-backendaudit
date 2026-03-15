@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from app.routes.audit import router as router_audit
+from app.routes.kms import router as router_kms
 
 app = FastAPI(
     title="API Inmero - Backend Auditory Agrofusion",
@@ -31,6 +32,9 @@ app.add_middleware(
 )
 # Registro de rutas relacionadas con auditoría
 app.include_router(router_audit)
+
+# Registro de rutas relacionadas con KMS (Key Management Service)
+app.include_router(router_kms)
 
 if __name__ == "__main__":
     uvicorn.run(
