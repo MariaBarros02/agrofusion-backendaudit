@@ -8,7 +8,7 @@ Este módulo define dependencias de FastAPI para:
 from fastapi import Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from app.core.database import get_db
@@ -108,4 +108,34 @@ def get_current_user_id(
         return UUID(user_id_str)
     except (ValueError, TypeError):
         return None
+
+
+def require_permission(required_code: str):
+    """
+    Crea una dependencia que exige que el usuario autenticado tenga
+    un permiso específico identificado por su código.
+
+    Se asume que el JWT incluye una claim ``permissions`` con una lista
+    de códigos de permiso (por ejemplo: ["024", "026", "028"]).
+    """
+
+    def _dependency(current_user: Optional[dict] = Depends(get_current_user)) -> dict:
+        if not current_user:
+            raise audit_error(
+                code="AUTH_NOT_AUTHENTICATED",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        permissions: List[str] = current_user.get("permissions", []) or []
+
+        if required_code not in permissions:
+            raise audit_error(
+                code="AUTH_INSUFFICIENT_PERMISSIONS",
+                status_code=status.HTTP_403_FORBIDDEN,
+                meta={"required_permission": required_code},
+            )
+
+        return current_user
+
+    return _dependency
 

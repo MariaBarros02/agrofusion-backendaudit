@@ -31,7 +31,7 @@ from app.schemas.kms import (
     SignatureListResponse,
 )
 from app.core.errors import audit_error
-from app.dependencies.auth import get_current_user_id
+from app.dependencies.auth import get_current_user_id, require_permission
 from fastapi import status
 
 router = APIRouter(prefix="/kms", tags=["KMS - Key Management Service"])
@@ -54,6 +54,7 @@ router = APIRouter(prefix="/kms", tags=["KMS - Key Management Service"])
 def create_key(
     request: KeyCreateRequest,
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("026")),
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """
@@ -105,6 +106,7 @@ def create_key(
 def get_key(
     key_id: UUID,
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("027")),
 ):
     """Obtiene información pública de una clave (sin datos sensibles)."""
     service = KmsService()
@@ -126,6 +128,7 @@ def list_keys(
     project_id: UUID = Query(..., description="ID del proyecto"),
     status_filter: Optional[str] = Query(None, description="Filtro por estado: active, rotated, revoked, expired"),
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("027")),
 ):
     """Lista las claves de un proyecto con filtros opcionales."""
     service = KmsService()
@@ -153,6 +156,7 @@ def get_active_keys(
     project_id: UUID,
     key_purpose: Optional[str] = None,
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("027")),
 ):
     """Obtiene claves activas de un proyecto, opcionalmente filtradas por propósito."""
     service = KmsService()
@@ -181,6 +185,7 @@ def get_active_keys(
 def create_certificate(
     request: CertificateCreateRequest,
     db: Session = Depends(get_db),
+    current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """Registra un certificado X.509 emitido por una CA."""
     service = KmsService()
@@ -234,6 +239,7 @@ def create_certificate(
 def get_certificate_by_key(
     key_id: UUID,
     db: Session = Depends(get_db),
+    current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """Obtiene el certificado más reciente asociado a una clave."""
     service = KmsService()
@@ -253,6 +259,7 @@ def get_certificate_by_key(
 def create_signature(
     request: SignatureCreateRequest,
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("024")),
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """
@@ -309,6 +316,7 @@ def create_signature(
 def verify_signature(
     request: SignatureVerifyRequest,
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("028")),
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """
@@ -356,6 +364,7 @@ def verify_signature(
 def get_signature(
     signature_id: UUID,
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("028")),
 ):
     """Obtiene información de una firma digital."""
     service = KmsService()
@@ -378,6 +387,7 @@ def list_signatures(
     limit: int = Query(100, ge=1, le=1000, description="Número máximo de resultados"),
     offset: int = Query(0, ge=0, description="Número de resultados a saltar"),
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("028")),
 ):
     """Lista las firmas de un proyecto con paginación."""
     service = KmsService()
@@ -399,6 +409,7 @@ def list_signatures(
 def get_document_signatures(
     document_id: UUID,
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("028")),
 ):
     """Obtiene todas las firmas de un documento."""
     service = KmsService()
@@ -419,6 +430,7 @@ def rotate_key(
     key_id: UUID,
     request: KeyRotationRequest,
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("025")),
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """
@@ -473,6 +485,7 @@ def rotate_key(
 def get_key_rotations(
     key_id: UUID,
     db: Session = Depends(get_db),
+    current_user=Depends(require_permission("025")),
 ):
     """Obtiene todas las rotaciones relacionadas con una clave."""
     service = KmsService()
