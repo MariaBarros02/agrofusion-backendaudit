@@ -11,12 +11,14 @@ import uvicorn
 from app.routes.audit import router as router_audit
 
 app = FastAPI(
-    title="API Inmero - Backend Auditory Agrofusion",
+    root_path="/agrofusion/test/audit",
+    title="API Inmero - Backend Auditory Agrofusion - Testing",
     version="1.0.0",
     description="API de auditoría para el backend de Agrofusion, encargada del registro y consulta de eventos y errores."
 )
 # Orígenes permitidos para solicitudes CORS (frontend)
 origins = [
+    "https://inmero.co/agrofusion/test",
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
