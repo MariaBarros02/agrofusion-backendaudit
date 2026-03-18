@@ -236,7 +236,6 @@ class KeyRotationResponse(BaseModel):
     grace_period_days: int
     rotated_by: UUID
     rotated_at: datetime
-    created_at: datetime
     
     class Config:
         from_attributes = True

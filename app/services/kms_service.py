@@ -112,6 +112,7 @@ class KmsService:
         valid_to: Optional[datetime],
         created_by: Optional[UUID] = None,
         kms_key_reference: Optional[str] = None,
+        skip_alias_validation: bool = False,
     ):
         """
         Crea una nueva clave criptográfica y la registra en la base de datos.
@@ -120,14 +121,16 @@ class KmsService:
         Este método simula el almacenamiento seguro.
         """
         # Validar que no exista otra clave activa con el mismo alias en el proyecto
-        existing_keys = self.kms_repo.get_keys_by_project(db, project_id)
-        for key in existing_keys:
-            if key.key_alias == key_alias and key.status == KeyStatus.ACTIVE:
-                raise audit_error(
-                    "KEY_ALIAS_EXISTS",
-                    status.HTTP_400_BAD_REQUEST,
-                    {"key_alias": key_alias},
-                )
+        # (a menos que explícitamente se omita, por ejemplo durante una rotación).
+        if not skip_alias_validation:
+            existing_keys = self.kms_repo.get_keys_by_project(db, project_id)
+            for key in existing_keys:
+                if key.key_alias == key_alias and key.status == KeyStatus.ACTIVE:
+                    raise audit_error(
+                        "KEY_ALIAS_EXISTS",
+                        status.HTTP_400_BAD_REQUEST,
+                        {"key_alias": key_alias},
+                    )
 
         # Generar par de claves
         private_pem, public_pem = self.generate_key_pair(algorithm)
@@ -501,6 +504,7 @@ class KmsService:
             valid_to=old_key.valid_to,
             created_by=rotated_by,
             kms_key_reference=None,
+            skip_alias_validation=True,
         )
 
         # Actualizar versión de la nueva clave

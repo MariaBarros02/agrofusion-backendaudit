@@ -90,13 +90,6 @@ class AfKmsKeyRotation(Base):
         index=True,
     )
 
-    # Fecha de creación del registro
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
     # Índices para optimizar búsquedas
     __table_args__ = (
         Index("ix_kms_rot_old", "old_key_id"),
