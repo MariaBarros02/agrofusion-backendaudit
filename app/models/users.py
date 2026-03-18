@@ -95,3 +95,8 @@ class Users(Base):
     #Tiempo de bloqueo
     blocked_until = Column(DateTime(timezone=True))
     
+    sessions = relationship(
+        "AuthSession",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
