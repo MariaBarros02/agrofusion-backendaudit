@@ -1,45 +1,141 @@
-from sqlalchemy import Column, String, DateTime, Integer, Text
+from sqlalchemy import (
+    Column,
+    String,
+    DateTime,
+    ForeignKey,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import UUID, JSONB, INET
+from sqlalchemy.sql import func
 from app.core.database import Base
+from sqlalchemy.orm import relationship
+import uuid
 
 
-class AfAuditLog(Base):
+class AuditLog(Base):
+    """
+    Modelo de auditoría del sistema.
 
+    Representa un evento auditable generado por acciones del sistema
+    (login, logout, errores, accesos, integraciones, etc.).
+
+    Diseñado para:
+    - Cumplimiento de auditoría
+    - Trazabilidad
+    - Integridad de eventos
+    - No repudio
+    """
     __tablename__ = "af_audit_log"
+    __table_args__ = {"schema": "public"}
 
-    audit_id = Column(Integer, primary_key=True, index=True)
+    # Identificador único del evento de auditoría
+    audit_id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4
+    )
 
-    tenant_id = Column(Integer)
+    # Usuario que ejecuta la acción (puede ser NULL en eventos del sistema)
+    actor_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.users.user_id"),
+        nullable=True
+    )
 
-    actor_id = Column(String)
+    # Código de la acción auditada (LOGIN_SUCCESS, LOGIN_FAILED, etc.)
+    action_code = Column(
+        String(64),
+        nullable=False
+    )
 
-    external_project_id = Column(Integer)
+    # Información del objetivo afectado por la acción (ej. usuario, recurso)
+    target_json = Column(JSONB, nullable=True)
 
-    trace_id = Column(String)
+    # Diferencias o cambios realizados (útil para auditoría de modificaciones)
+    diff_json = Column(JSONB, nullable=True)
 
-    project_id = Column(Integer)
+    # Fecha de creación del evento de auditoría
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
 
-    device_info = Column(String)
+    # Dirección IP desde donde se ejecutó la acción
+    actor_ip = Column(INET, nullable=True)
 
-    target_json = Column(Text)
+    # Sesión asociada al evento (si aplica)
+    session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.af_auth_sessions.sso_session_id"),
+        nullable=True
+    )
 
-    diff_json = Column(Text)
+    # Término categorizado de la acción (catálogo de términos)
+    action_term_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.cat_terms.term_id"),
+        nullable=True
+    )
 
-    created_at = Column(DateTime)
+    # Timestamp redundante para compatibilidad con otros diseños
+    at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
 
-    actor_ip = Column(String)
+    # Proyecto externo asociado al evento (integraciones)
+    external_project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.af_external_projects.external_project_id"),
+        nullable=True
+    )
 
-    session_id = Column(String)
+    # Identificador de trazabilidad distribuida
+    trace_id = Column(
+        UUID(as_uuid=True),
+        nullable=True
+    )
 
-    action_term_id = Column(Integer)
+    # Código del módulo que generó el evento
+    module_code = Column(
+        String(60),
+        nullable=True
+    )
 
-    at = Column(DateTime)
+    # Identificador del tenant (multitenancy)
+    tenant_id = Column(
+        UUID(as_uuid=True),
+        nullable=True
+    )
 
-    action_code = Column(String)
+    # Proyecto interno asociado al evento
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.af_projects.af_project_id"),
+        nullable=True
+    )
 
-    outcome = Column(String)
+    # Resultado del evento: success | failure
+    outcome = Column(
+        String(20),
+        default="success",
+        nullable=True
+    )
 
-    module_code = Column(String)
+    # Hash del payload para verificación de integridad
+    payload_hash = Column(
+        String(128),
+        nullable=True
+    )
 
-    payload_hash = Column(String)
+    # Firma digital para no repudio del evento
+    digital_signature = Column(
+        Text,
+        nullable=True
+    )
 
-    digital_signature = Column(String)
+    # Información del dispositivo, navegador o cliente
+    device_info = Column(JSONB, nullable=True)
+
