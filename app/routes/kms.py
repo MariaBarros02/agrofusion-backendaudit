@@ -5,7 +5,7 @@ Endpoints para gestión de claves criptográficas, firmas digitales,
 validación y rotación de claves.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
@@ -33,6 +33,7 @@ from app.schemas.kms import (
 from app.core.errors import audit_error
 from app.dependencies.auth import get_current_user_id, require_permission
 from fastapi import status
+from app.repositories.audit_repository import AuditRepository
 
 router = APIRouter(prefix="/kms", tags=["KMS - Key Management Service"])
 
@@ -214,6 +215,7 @@ def _token_validation_responses() -> dict:
     },
 )
 def create_key(
+    infoRequest: Request,
     request: KeyCreateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("026")),
@@ -226,7 +228,7 @@ def create_key(
     La clave privada se almacena de forma segura en el KMS.
     """
     service = KmsService()
-    
+    audit_repo = AuditRepository()
     try:
         key = service.create_key(
             db=db,
@@ -239,15 +241,17 @@ def create_key(
         )
         
         # TODO: Registrar evento en af_audit_log
-        # audit_repo.log_event(
-        #     db=db,
-        #     action_code="KMS_KEY_CREATED",
-        #     outcome="success",
-        #     module_code="KMS",
-        #     project_id=request.project_id,
-        #     actor_id=current_user_id,
-        #     metadata={"key_id": str(key.key_id), "algorithm": request.algorithm.value}
-        # )
+        audit_repo.log_event(
+            db=db,
+            action_code="CREATE_CRYPTOGRAPHIC_KEY",
+            outcome="success",
+            module_code="KMS",
+            project_id=request.project_id,
+            actor_id=current_user_id,
+            ip=infoRequest.client.host,
+            user_agent=infoRequest.headers.get("user-agent"),
+            metadata={"key_id": str(key.key_id), "algorithm": request.algorithm.value}
+        )
         
         return key
     except HTTPException:
