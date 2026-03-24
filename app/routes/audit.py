@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 from typing import List
+from app.services.permissions_service import PermissionsService
+from app.core.errors import audit_error
 
-
-from app.dependencies.auth import get_current_user_id, require_permission
+from app.dependencies.auth import get_current_user
 from app.core.database import get_db
 from app.schemas.audit import ErrorExtProRequest, ListAuditRequest, ListErrorsRequest
 from app.services.audit_service import AuditService
@@ -290,8 +291,7 @@ def register_errors_EP(
 def list_audit_logs(
     request: ListAuditRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("030")),
-    current_user_id=Depends(get_current_user_id)
+    current_user=Depends(get_current_user)
 ):
     """
     Lista los eventos de auditoría del sistema con paginación y filtros avanzados.
@@ -377,7 +377,8 @@ def list_audit_logs(
         user_id=request.user_id,
         event_type=request.event_type,
         start_date=request.start_date,
-        end_date=request.end_date
+        end_date=request.end_date,
+        current_user=current_user
     )
 
 @router.get(
@@ -481,7 +482,7 @@ def list_audit_logs(
 def list_users(
     db: Session = Depends(get_db),
     repository: AuditRepository = Depends(AuditRepository),
-    current_user=Depends(require_permission("030"))
+    current_user=Depends(get_current_user)
 ):
     """
     Obtiene una lista básica de usuarios del sistema para uso en filtros de auditoría.
@@ -529,6 +530,17 @@ def list_users(
         - No incluye paginación
         - Los IDs son convertidos a string
     """
+
+    service =  PermissionsService()
+
+    if not service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "030"  # Código del permiso para listar auditoria
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+
     users = repository.list_users(db)
 
     return [
@@ -634,7 +646,7 @@ def list_users(
 def list_origins(
     db: Session = Depends(get_db),
     repository: AuditRepository = Depends(AuditRepository),
-    current_user=Depends(require_permission("030"))
+    current_user=Depends(get_current_user)
 ):
     """
     Obtiene la lista de orígenes (módulos) de eventos de auditoría.
@@ -681,6 +693,17 @@ def list_origins(
         - No requiere paginación
         - Representa los diferentes dominios funcionales del sistema
     """
+
+    service =  PermissionsService()
+
+    if not service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "030"  # Código del permiso para listar auditoria
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+
     origins = repository.list_origins(db)
 
     return [{"code": origin.module_code} for origin in origins]
@@ -783,7 +806,7 @@ def list_origins(
 def list_events(
     db: Session = Depends(get_db),
     repository: AuditRepository = Depends(AuditRepository),
-    current_user=Depends(require_permission("030"))
+     current_user=Depends(get_current_user)
 ):
     """
     Obtiene la lista de tipos de eventos de auditoría.
@@ -830,6 +853,17 @@ def list_events(
         - No incluye información adicional, solo el código del evento
         - No requiere paginación
     """
+
+    service =  PermissionsService()
+
+    if not service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "030"  # Código del permiso para listar auditoria
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+
     events = repository.list_events(db)
 
     return [{"code": event.action_code} for event in events]
@@ -930,7 +964,7 @@ def list_events(
 def list_results(
     db: Session = Depends(get_db),
     repository: AuditRepository = Depends(AuditRepository),
-    current_user=Depends(require_permission("030"))
+    current_user=Depends(get_current_user)
 ):
     """
     Obtiene la lista de resultados de eventos de auditoría.
@@ -977,6 +1011,17 @@ def list_results(
         - No incluye información adicional, solo el código del resultado
         - No requiere paginación
     """
+
+    service =  PermissionsService()
+
+    if not service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "030"  # Código del permiso para listar auditoria
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+
     results = repository.list_results(db)
 
     return [{"code": result.outcome} for result in results]
@@ -1132,8 +1177,7 @@ def list_results(
 def list_errors_EP(
     request: ListErrorsRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("031")),
-    current_user_id=Depends(get_current_user_id)
+    current_user=Depends(get_current_user)
 ):
     """
     Lista los errores provenientes de proyectos externos con paginación y filtros avanzados.
@@ -1202,6 +1246,17 @@ def list_errors_EP(
         - Optimizado para grandes volúmenes de logs
         - La paginación inicia en 1
     """
+
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "031"  # Código del permiso para listar  auditoria de errores en PE
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+
     service = AuditService()
 
     return service.get_errors_EP(
@@ -1314,7 +1369,7 @@ def list_errors_EP(
 def list_error_components(
     db: Session = Depends(get_db),
     service: AuditService = Depends(AuditService),
-    current_user=Depends(require_permission("031"))
+    current_user=Depends(get_current_user)
 ):
     """
     Obtiene la lista de componentes donde se han generado errores en proyectos externos.
@@ -1363,6 +1418,16 @@ def list_error_components(
         - Excluye valores nulos o vacíos
         - No requiere paginación
     """
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "031"  # Código del permiso para  listar  auditoria de errores en PE
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+
     components = service.get_error_components(db)
 
     return [
@@ -1468,7 +1533,7 @@ def list_error_components(
 def list_error_codes(
     db: Session = Depends(get_db),
     service: AuditService = Depends(AuditService),
-    current_user=Depends(require_permission("031"))
+     current_user=Depends(get_current_user)
 ):
     """
     Obtiene la lista de códigos de error registrados en proyectos externos.
@@ -1516,6 +1581,16 @@ def list_error_codes(
         - Excluye valores nulos o vacíos
         - No requiere paginación
     """
+
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "031"  # Código del permiso para  listar  auditoria de errores en PE
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
     codes = service.get_error_codes(db)
 
     return [
@@ -1621,7 +1696,7 @@ def list_error_codes(
 def list_error_severity(
     db: Session = Depends(get_db),
     service: AuditService = Depends(AuditService),
-    current_user=Depends(require_permission("031"))
+     current_user=Depends(get_current_user)
 ):
     """
     Obtiene la lista de niveles de severidad de errores registrados en proyectos externos.
@@ -1669,6 +1744,16 @@ def list_error_severity(
         - Excluye valores nulos o vacíos
         - No requiere paginación
     """
+
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "031"  # Código del permiso PARA  listar  auditoria de errores en PE
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
     severities = service.get_error_severity(db)
 
     return [

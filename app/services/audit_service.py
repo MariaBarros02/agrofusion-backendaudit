@@ -1,15 +1,19 @@
 from sqlalchemy.orm import Session
+
 from typing import List
+from fastapi import Depends,status
+from app.core.errors import audit_error
+from app.dependencies.auth import get_current_user
 
 from app.schemas.external_projects import ExternalProjectResponse
 from app.repositories.audit_repository import AuditRepository
-
+from app.services.permissions_service import PermissionsService
 
 class AuditService:
 
     def __init__(self):
         self.audit_repo = AuditRepository()
-
+        self.perm_service = PermissionsService()
     """
     Coordina la lógica de negocio para el registro de errores
     de proyectos externos.
@@ -38,8 +42,16 @@ class AuditService:
         user_id: str = None,
         event_type: str = None,
         start_date=None,
-        end_date=None
+        end_date=None,
+        current_user=Depends(get_current_user),
     ):
+        if not self.perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "030"  # Código del permiso para listar auditoria
+        ):
+            audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
 
         logs, total = self.audit_repo.list_audit_logs(
             db=db,
