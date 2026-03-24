@@ -1,34 +1,1678 @@
-from fastapi import APIRouter, Depends, Request
-from sqlalchemy.orm import Session      
-from app.core.database import get_db
-from app.schemas.audit import ErrorExtProRequest
-from app.services.audit_service import AuditService
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.orm import Session
 from typing import List
+
+
+from app.dependencies.auth import get_current_user_id, require_permission
+from app.core.database import get_db
+from app.schemas.audit import ErrorExtProRequest, ListAuditRequest, ListErrorsRequest
+from app.services.audit_service import AuditService
+from app.repositories.audit_repository import AuditRepository
+
 
 router = APIRouter(prefix="/audit", tags=["Auditory"])
 
 
 
-@router.post("/register-errors-EP", response_model=None,  summary="Registrar errores de proyectos externos",
-    description="Recibe una lista de errores generados por proyectos externos y los almacena en el sistema de auditoría.", responses={
-    404: {
-        "description": "Contexto o severidad no encontrada en catálogos"
-    },
-    200: {
-        "description": "Errores registrados correctamente"
+@router.post(
+    "/register-errors-EP",
+    summary="Registrar errores de proyectos externos",
+    description="Permite registrar múltiples errores provenientes de proyectos externos para centralizar fallos técnicos del sistema.",
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        201: {
+            "description": "Errores registrados correctamente",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "success": {
+                            "summary": "Registro exitoso",
+                            "value": {
+                                "success": True,
+                                "code": "ERRORS_REGISTERED_SUCCESS"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        400: {
+            "description": "Error en la estructura del payload o validaciones",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_payload": {
+                            "summary": "Estructura inválida",
+                            "value": {
+                                "detail": {
+                                    "code": "INVALID_REQUEST_BODY",
+                                    "meta": {
+                                        "reason": "Estructura del payload incorrecta"
+                                    }
+                                }
+                            }
+                        },
+                        "missing_fields": {
+                            "summary": "Campos requeridos faltantes",
+                            "value": {
+                                "detail": {
+                                    "code": "REQUIRED_FIELDS_MISSING",
+                                    "meta": {
+                                        "fields": ["project", "message", "severity"]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        401: {
+            "description": "Error de autenticación",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "summary": "Token inválido o expirado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INVALID_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        403: {
+            "description": "Error de autorización",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "insufficient_permissions": {
+                            "summary": "Permisos insuficientes",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INSUFFICIENT_PERMISSIONS",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        500: {
+            "description": "Error interno del servidor",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "internal_error": {
+                            "summary": "Error inesperado",
+                            "value": {
+                                "detail": {
+                                    "code": "INTERNAL_SERVER_ERROR",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-})
-def register_errors_EP( payload: List[ErrorExtProRequest],  db: Session = Depends(get_db)):
+)
+def register_errors_EP(
+    payload: List[ErrorExtProRequest],
+    db: Session = Depends(get_db)
+):
     """
-        Registra errores provenientes de proyectos externos.
+    Registra múltiples errores provenientes de proyectos externos en el sistema de auditoría.
 
-        Este endpoint permite que sistemas externos reporten errores
-        operativos o funcionales para ser almacenados en el sistema
-        de auditoría.
+    Este endpoint permite centralizar logs de errores técnicos generados en distintos
+    módulos o integraciones externas, facilitando su monitoreo, análisis y trazabilidad.
 
-        - Valida contexto y severidad contra catálogos activos
-        - Relaciona el error con un proyecto externo (opcional)
-        - Persiste la información para análisis posterior
+    Args:
+        payload (List[ErrorExtProRequest]):
+            Lista de errores a registrar. Cada error incluye:
+            - project: Proyecto origen del error
+            - message: Descripción del error
+            - severity: Nivel de severidad (CRITICAL, WARNING, INFO)
+            - error_code: Código técnico del error
+            - component: Componente donde ocurrió
+            - context: Información adicional del flujo
+
+        db (Session):
+            Sesión activa de base de datos
+
+    Returns:
+        dict:
+            Resultado del registro:
+            - success: True si el registro fue exitoso
+            - code: "ERRORS_REGISTERED_SUCCESS"
+
+    Raises:
+        HTTPException 400:
+            - INVALID_REQUEST_BODY: Estructura incorrecta del payload
+            - REQUIRED_FIELDS_MISSING: Faltan campos obligatorios
+
+        HTTPException 401:
+            - AUTH_INVALID_TOKEN
+            - AUTH_MISSING_TOKEN
+
+        HTTPException 403:
+            - AUTH_INSUFFICIENT_PERMISSIONS
+
+        HTTPException 500:
+            - INTERNAL_SERVER_ERROR
+
+    Process Flow:
+        1. Validación de estructura del payload
+        2. Iteración sobre la lista de errores
+        3. Validación de campos obligatorios por cada error
+        4. Inserción en base de datos
+        5. Registro de auditoría interna (si aplica)
+        6. Confirmación de operación
+
+    Notes:
+        - Permite registrar múltiples errores en una sola petición (batch)
+        - Diseñado para integraciones externas (microservicios, APIs, etc.)
+        - Facilita monitoreo centralizado de fallos
+        - Puede ser consumido por sistemas externos o middleware
+        - No requiere paginación ni filtros
     """
     service = AuditService()
-    return service.register_errors_EP(db=db, errors= payload) 
+    return service.register_errors_EP(db=db, errors=payload)
+
+# ==================== AUDITORÍA ====================
+
+@router.post(
+    "/list",
+    summary="Listar eventos de auditoría",
+    description="Obtiene una lista paginada de eventos de auditoría del sistema con filtros dinámicos para análisis y trazabilidad.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Listado de eventos obtenido exitosamente",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "success": {
+                            "summary": "Listado exitoso",
+                            "value": {
+                                "items": [
+                                    {
+                                        "audit_id": "123",
+                                        "user": "Juan Pérez",
+                                        "origin": "AUTH",
+                                        "event_type": "LOGIN",
+                                        "result": "SUCCESS",
+                                        "created_at": "2024-01-01T10:00:00Z"
+                                    }
+                                ],
+                                "total": 45,
+                                "page": 1,
+                                "size": 10,
+                                "total_pages": 5
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        400: {
+            "description": "Parámetros de solicitud inválidos",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_params": {
+                            "value": {
+                                "detail": {
+                                    "code": "INVALID_REQUEST",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        401: {
+            "description": "No autenticado",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INVALID_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        403: {
+            "description": "No autorizado para consultar auditoría",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "no_permission": {
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INSUFFICIENT_PERMISSIONS",
+                                    "meta": {
+                                        "required_permission": "030"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        500: {
+            "description": "Error interno del servidor"
+        }
+    }
+)
+def list_audit_logs(
+    request: ListAuditRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("030")),
+    current_user_id=Depends(get_current_user_id)
+):
+    """
+    Lista los eventos de auditoría del sistema con paginación y filtros avanzados.
+
+    Permite consultar logs de auditoría para análisis de actividad, trazabilidad
+    y monitoreo del sistema.
+
+    Args:
+        request (ListAuditRequest):
+            Parámetros de paginación y filtrado:
+            - page_index: Número de página (debe ser >= 1)
+            - page_size: Tamaño de página (debe ser >= 1)
+            - search: Texto de búsqueda
+            - origin: Módulo origen del evento (AUTH, USERS, etc.)
+            - result: Resultado del evento (SUCCESS, FAILURE)
+            - user_id: ID del usuario asociado
+            - event_type: Tipo de evento (LOGIN, CREATE_USER, etc.)
+            - start_date: Fecha inicial del filtro
+            - end_date: Fecha final del filtro
+
+        db (Session):
+            Sesión de base de datos.
+
+        current_user:
+            Usuario autenticado con permisos de auditoría ("030").
+
+        current_user_id:
+            ID del usuario autenticado.
+
+    Returns:
+        PaginatedAuditResponse:
+            Objeto con lista paginada de eventos:
+            - items: Lista de eventos de auditoría
+                - audit_id: ID del evento
+                - user: Nombre del usuario
+                - origin: Módulo origen
+                - event_type: Tipo de evento
+                - result: Resultado (SUCCESS/FAILURE)
+                - created_at: Fecha del evento
+            - total: Número total de registros
+            - page: Página actual
+            - size: Tamaño de página
+            - total_pages: Total de páginas disponibles
+
+    Raises:
+        HTTPException 400:
+            - PAGE_INDEX_INVALID
+            - PAGE_SIZE_INVALID
+
+        HTTPException 401:
+            - AUTH_INVALID_TOKEN
+            - AUTH_MISSING_TOKEN
+
+        HTTPException 403:
+            - AUTH_INSUFFICIENT_PERMISSIONS
+
+        HTTPException 500:
+            - INTERNAL_SERVER_ERROR
+
+    Process Flow:
+        1. Validación de parámetros de paginación
+        2. Construcción de filtros dinámicos
+        3. Consulta paginada en base de datos
+        4. Transformación de resultados
+        5. Retorno de respuesta con metadatos
+
+    Notes:
+        - Requiere permiso "030" para acceder
+        - Soporta múltiples filtros combinables
+        - Optimizado para grandes volúmenes de logs
+        - Base para dashboards de auditoría
+        - La paginación inicia en 1 (no en 0)
+    """
+    service = AuditService()
+
+    return service.get_audit_logs(
+        db=db,
+        page_index=request.page_index,
+        page_size=request.page_size,
+        search=request.search,
+        origin=request.origin,
+        result=request.result,
+        user_id=request.user_id,
+        event_type=request.event_type,
+        start_date=request.start_date,
+        end_date=request.end_date
+    )
+
+@router.get(
+    "/users",
+    summary="Listar usuarios para filtros de auditoría",
+    description="Obtiene la lista de usuarios disponibles en el sistema para ser utilizados en filtros dentro del módulo de auditoría.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Listado de usuarios obtenido exitosamente",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "success": {
+                            "summary": "Listado exitoso",
+                            "value": [
+                                {
+                                    "id": "123e4567-e89b-12d3-a456-426614174000",
+                                    "name": "Juan Pérez"
+                                },
+                                {
+                                    "id": "223e4567-e89b-12d3-a456-426614174001",
+                                    "name": "María Gómez"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+
+        401: {
+            "description": "Error de autenticación",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "summary": "Token inválido o expirado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INVALID_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        },
+                        "missing_token": {
+                            "summary": "Token no proporcionado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_MISSING_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        403: {
+            "description": "Error de autorización",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "insufficient_permissions": {
+                            "summary": "Permisos insuficientes",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INSUFFICIENT_PERMISSIONS",
+                                    "meta": {
+                                        "required_permission": "030"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        500: {
+            "description": "Error interno del servidor",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "internal_error": {
+                            "summary": "Error inesperado",
+                            "value": {
+                                "detail": {
+                                    "code": "INTERNAL_SERVER_ERROR",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
+def list_users(
+    db: Session = Depends(get_db),
+    repository: AuditRepository = Depends(AuditRepository),
+    current_user=Depends(require_permission("030"))
+):
+    """
+    Obtiene una lista básica de usuarios del sistema para uso en filtros de auditoría.
+
+    Este endpoint retorna únicamente información esencial de los usuarios,
+    permitiendo su uso en componentes de interfaz como selects o filtros.
+
+    Args:
+        db (Session):
+            Sesión activa de base de datos.
+
+        repository (AuditRepository):
+            Repositorio encargado de acceder a los datos de auditoría.
+
+        current_user:
+            Usuario autenticado que realiza la solicitud.
+            Debe tener permiso "030" para acceder al módulo de auditoría.
+
+    Returns:
+        List[dict]:
+            Lista de usuarios con información básica:
+            - id: ID único del usuario (UUID en formato string)
+            - name: Nombre del usuario
+
+    Raises:
+        HTTPException 401:
+            - AUTH_INVALID_TOKEN
+            - AUTH_MISSING_TOKEN
+
+        HTTPException 403:
+            - AUTH_INSUFFICIENT_PERMISSIONS
+
+        HTTPException 500:
+            - INTERNAL_SERVER_ERROR
+
+    Process Flow:
+        1. Validación de permisos del usuario ("030")
+        2. Consulta de usuarios en el repositorio
+        3. Transformación de resultados a formato simplificado
+        4. Retorno de lista de usuarios
+
+    Notes:
+        - No retorna información sensible
+        - Diseñado para poblar filtros en el módulo de auditoría
+        - No incluye paginación
+        - Los IDs son convertidos a string
+    """
+    users = repository.list_users(db)
+
+    return [
+        {"id": str(user.user_id), "name": user.name}
+        for user in users
+    ]
+
+
+@router.get(
+    "/origins",
+    summary="Listar orígenes (módulos) de auditoría",
+    description="Obtiene la lista de módulos/orígenes desde donde se generan los eventos de auditoría para ser utilizados en filtros del sistema.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Listado de orígenes obtenido exitosamente",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "success": {
+                            "summary": "Listado exitoso",
+                            "value": [
+                                {"code": "AUTH"},
+                                {"code": "USERS"},
+                                {"code": "PAYMENTS"},
+                                {"code": "ORDERS"}
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+
+        401: {
+            "description": "Error de autenticación",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "summary": "Token inválido o expirado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INVALID_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        },
+                        "missing_token": {
+                            "summary": "Token no proporcionado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_MISSING_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        403: {
+            "description": "Error de autorización",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "insufficient_permissions": {
+                            "summary": "Permisos insuficientes",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INSUFFICIENT_PERMISSIONS",
+                                    "meta": {
+                                        "required_permission": "030"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        500: {
+            "description": "Error interno del servidor",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "internal_error": {
+                            "summary": "Error inesperado",
+                            "value": {
+                                "detail": {
+                                    "code": "INTERNAL_SERVER_ERROR",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
+def list_origins(
+    db: Session = Depends(get_db),
+    repository: AuditRepository = Depends(AuditRepository),
+    current_user=Depends(require_permission("030"))
+):
+    """
+    Obtiene la lista de orígenes (módulos) de eventos de auditoría.
+
+    Este endpoint retorna los diferentes módulos del sistema que generan
+    eventos de auditoría, permitiendo su uso en filtros dentro de la interfaz.
+
+    Args:
+        db (Session):
+            Sesión activa de base de datos.
+
+        repository (AuditRepository):
+            Repositorio encargado de obtener los datos de auditoría.
+
+        current_user:
+            Usuario autenticado que realiza la solicitud.
+            Debe contar con permiso "030".
+
+    Returns:
+        List[dict]:
+            Lista de módulos/orígenes:
+            - code: Código del módulo (ej: AUTH, USERS, PAYMENTS)
+
+    Raises:
+        HTTPException 401:
+            - AUTH_INVALID_TOKEN
+            - AUTH_MISSING_TOKEN
+
+        HTTPException 403:
+            - AUTH_INSUFFICIENT_PERMISSIONS
+
+        HTTPException 500:
+            - INTERNAL_SERVER_ERROR
+
+    Process Flow:
+        1. Validación de permisos del usuario ("030")
+        2. Consulta de orígenes en el repositorio
+        3. Transformación de resultados a lista de códigos
+        4. Retorno de lista de módulos
+
+    Notes:
+        - Se utiliza principalmente para poblar filtros en auditoría
+        - No incluye información adicional, solo el código del módulo
+        - No requiere paginación
+        - Representa los diferentes dominios funcionales del sistema
+    """
+    origins = repository.list_origins(db)
+
+    return [{"code": origin.module_code} for origin in origins]
+
+
+@router.get(
+    "/events",
+    summary="Listar tipos de eventos de auditoría",
+    description="Obtiene la lista de tipos de eventos registrados en el sistema de auditoría para ser utilizados en filtros de la interfaz.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Listado de eventos obtenido exitosamente",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "success": {
+                            "summary": "Listado exitoso",
+                            "value": [
+                                {"code": "LOGIN"},
+                                {"code": "CREATE_USER"},
+                                {"code": "UPDATE_PROFILE"},
+                                {"code": "DELETE_USER"}
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+
+        401: {
+            "description": "Error de autenticación",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "summary": "Token inválido o expirado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INVALID_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        },
+                        "missing_token": {
+                            "summary": "Token no proporcionado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_MISSING_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        403: {
+            "description": "Error de autorización",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "insufficient_permissions": {
+                            "summary": "Permisos insuficientes",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INSUFFICIENT_PERMISSIONS",
+                                    "meta": {
+                                        "required_permission": "030"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        500: {
+            "description": "Error interno del servidor",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "internal_error": {
+                            "summary": "Error inesperado",
+                            "value": {
+                                "detail": {
+                                    "code": "INTERNAL_SERVER_ERROR",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
+def list_events(
+    db: Session = Depends(get_db),
+    repository: AuditRepository = Depends(AuditRepository),
+    current_user=Depends(require_permission("030"))
+):
+    """
+    Obtiene la lista de tipos de eventos de auditoría.
+
+    Este endpoint retorna los códigos de las acciones registradas en el sistema,
+    permitiendo su uso en filtros dentro del módulo de auditoría.
+
+    Args:
+        db (Session):
+            Sesión activa de base de datos.
+
+        repository (AuditRepository):
+            Repositorio encargado de acceder a los datos de auditoría.
+
+        current_user:
+            Usuario autenticado que realiza la solicitud.
+            Debe contar con permiso "030".
+
+    Returns:
+        List[dict]:
+            Lista de eventos:
+            - code: Código del evento (ej: LOGIN, CREATE_USER, UPDATE_PROFILE)
+
+    Raises:
+        HTTPException 401:
+            - AUTH_INVALID_TOKEN
+            - AUTH_MISSING_TOKEN
+
+        HTTPException 403:
+            - AUTH_INSUFFICIENT_PERMISSIONS
+
+        HTTPException 500:
+            - INTERNAL_SERVER_ERROR
+
+    Process Flow:
+        1. Validación de permisos del usuario ("030")
+        2. Consulta de eventos en el repositorio
+        3. Transformación de resultados a lista de códigos
+        4. Retorno de lista de eventos
+
+    Notes:
+        - Se utiliza principalmente para poblar filtros en auditoría
+        - Representa acciones ejecutadas en el sistema
+        - No incluye información adicional, solo el código del evento
+        - No requiere paginación
+    """
+    events = repository.list_events(db)
+
+    return [{"code": event.action_code} for event in events]
+
+@router.get(
+    "/results",
+    summary="Listar resultados de eventos de auditoría",
+    description="Obtiene la lista de posibles resultados de los eventos de auditoría para ser utilizados en filtros dentro del sistema.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Listado de resultados obtenido exitosamente",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "success": {
+                            "summary": "Listado exitoso",
+                            "value": [
+                                {"code": "SUCCESS"},
+                                {"code": "FAILURE"},
+                                {"code": "ERROR"}
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+
+        401: {
+            "description": "Error de autenticación",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "summary": "Token inválido o expirado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INVALID_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        },
+                        "missing_token": {
+                            "summary": "Token no proporcionado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_MISSING_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        403: {
+            "description": "Error de autorización",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "insufficient_permissions": {
+                            "summary": "Permisos insuficientes",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INSUFFICIENT_PERMISSIONS",
+                                    "meta": {
+                                        "required_permission": "030"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        500: {
+            "description": "Error interno del servidor",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "internal_error": {
+                            "summary": "Error inesperado",
+                            "value": {
+                                "detail": {
+                                    "code": "INTERNAL_SERVER_ERROR",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
+def list_results(
+    db: Session = Depends(get_db),
+    repository: AuditRepository = Depends(AuditRepository),
+    current_user=Depends(require_permission("030"))
+):
+    """
+    Obtiene la lista de resultados de eventos de auditoría.
+
+    Este endpoint retorna los posibles estados finales de los eventos registrados,
+    permitiendo su uso en filtros dentro del módulo de auditoría.
+
+    Args:
+        db (Session):
+            Sesión activa de base de datos.
+
+        repository (AuditRepository):
+            Repositorio encargado de acceder a los datos de auditoría.
+
+        current_user:
+            Usuario autenticado que realiza la solicitud.
+            Debe contar con permiso "030".
+
+    Returns:
+        List[dict]:
+            Lista de resultados:
+            - code: Resultado del evento (ej: SUCCESS, FAILURE, ERROR)
+
+    Raises:
+        HTTPException 401:
+            - AUTH_INVALID_TOKEN
+            - AUTH_MISSING_TOKEN
+
+        HTTPException 403:
+            - AUTH_INSUFFICIENT_PERMISSIONS
+
+        HTTPException 500:
+            - INTERNAL_SERVER_ERROR
+
+    Process Flow:
+        1. Validación de permisos del usuario ("030")
+        2. Consulta de resultados en el repositorio
+        3. Transformación de resultados a lista de códigos
+        4. Retorno de lista de resultados
+
+    Notes:
+        - Se utiliza principalmente para poblar filtros en auditoría
+        - Representa el estado final de los eventos (éxito, fallo, error)
+        - No incluye información adicional, solo el código del resultado
+        - No requiere paginación
+    """
+    results = repository.list_results(db)
+
+    return [{"code": result.outcome} for result in results]
+
+
+# ==================== ERRORES ====================
+
+@router.post(
+    "/errors/list",
+    summary="Listar errores de proyectos externos",
+    description="Obtiene una lista paginada de errores registrados provenientes de proyectos externos con filtros avanzados para monitoreo y diagnóstico.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Listado de errores obtenido exitosamente",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "success": {
+                            "summary": "Listado exitoso",
+                            "value": {
+                                "items": [
+                                    {
+                                        "error_id": "123e4567-e89b-12d3-a456-426614174000",
+                                        "project": "PAYMENTS",
+                                        "component": "API",
+                                        "error_code": "TIMEOUT",
+                                        "severity": "CRITICAL",
+                                        "message": "Timeout en servicio externo",
+                                        "created_at": "2024-01-01T10:00:00Z"
+                                    },
+                                    {
+                                        "error_id": "223e4567-e89b-12d3-a456-426614174001",
+                                        "project": "AUTH",
+                                        "component": "SERVICE",
+                                        "error_code": "VALIDATION_ERROR",
+                                        "severity": "WARNING",
+                                        "message": "Error de validación de datos",
+                                        "created_at": "2024-01-02T12:30:00Z"
+                                    }
+                                ],
+                                "total": 50,
+                                "page": 1,
+                                "size": 10,
+                                "total_pages": 5
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        400: {
+            "description": "Error en parámetros de paginación o filtros",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_params": {
+                            "summary": "Parámetros inválidos",
+                            "value": {
+                                "detail": {
+                                    "code": "INVALID_REQUEST",
+                                    "meta": {}
+                                }
+                            }
+                        },
+                        "page_index_invalid": {
+                            "summary": "Índice de página inválido",
+                            "value": {
+                                "detail": {
+                                    "code": "PAGE_INDEX_INVALID",
+                                    "meta": {
+                                        "provided_value": 0,
+                                        "min_value": 1
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        401: {
+            "description": "Error de autenticación",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "summary": "Token inválido o expirado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INVALID_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        },
+                        "missing_token": {
+                            "summary": "Token no proporcionado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_MISSING_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        403: {
+            "description": "Error de autorización",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "insufficient_permissions": {
+                            "summary": "Permisos insuficientes",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INSUFFICIENT_PERMISSIONS",
+                                    "meta": {
+                                        "required_permission": "031"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        500: {
+            "description": "Error interno del servidor",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "internal_error": {
+                            "summary": "Error inesperado",
+                            "value": {
+                                "detail": {
+                                    "code": "INTERNAL_SERVER_ERROR",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
+def list_errors_EP(
+    request: ListErrorsRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("031")),
+    current_user_id=Depends(get_current_user_id)
+):
+    """
+    Lista los errores provenientes de proyectos externos con paginación y filtros avanzados.
+
+    Permite consultar logs de errores para monitoreo, diagnóstico y trazabilidad
+    en integraciones o procesos del sistema.
+
+    Args:
+        request (ListErrorsRequest):
+            Parámetros de paginación y filtrado:
+            - page_index: Número de página (>= 1)
+            - page_size: Tamaño de página (>= 1)
+            - search: Texto de búsqueda
+            - severity: Nivel de severidad (CRITICAL, WARNING, INFO)
+            - project: Proyecto origen del error
+            - component: Componente donde ocurrió el error
+            - error_code: Código técnico del error
+            - start_date: Fecha inicial del filtro
+            - end_date: Fecha final del filtro
+
+        db (Session):
+            Sesión activa de base de datos.
+
+        current_user:
+            Usuario autenticado con permiso "031".
+
+        current_user_id:
+            ID del usuario autenticado.
+
+    Returns:
+        dict:
+            Objeto con lista paginada de errores:
+            - items: Lista de errores
+            - total: Número total de registros
+            - page: Página actual
+            - size: Tamaño de página
+            - total_pages: Total de páginas disponibles
+
+    Raises:
+        HTTPException 400:
+            - INVALID_REQUEST
+            - PAGE_INDEX_INVALID
+            - PAGE_SIZE_INVALID
+
+        HTTPException 401:
+            - AUTH_INVALID_TOKEN
+            - AUTH_MISSING_TOKEN
+
+        HTTPException 403:
+            - AUTH_INSUFFICIENT_PERMISSIONS
+
+        HTTPException 500:
+            - INTERNAL_SERVER_ERROR
+
+    Process Flow:
+        1. Validación de parámetros de paginación
+        2. Construcción de filtros dinámicos
+        3. Consulta paginada en base de datos
+        4. Transformación de resultados
+        5. Retorno de respuesta con metadatos
+
+    Notes:
+        - Requiere permiso "031"
+        - Diseñado para monitoreo de errores en integraciones externas
+        - Soporta múltiples filtros combinables
+        - Optimizado para grandes volúmenes de logs
+        - La paginación inicia en 1
+    """
+    service = AuditService()
+
+    return service.get_errors_EP(
+        db=db,
+        page_index=request.page_index,
+        page_size=request.page_size,
+        search=request.search,
+        severity=request.severity,
+        project=request.project,
+        component=request.component,
+        error_code=request.error_code,
+        start_date=request.start_date,
+        end_date=request.end_date
+    )
+
+@router.get(
+    "/errors/components",
+    summary="Listar componentes de errores",
+    description="Obtiene la lista de componentes donde se han generado errores en proyectos externos para ser utilizados en filtros del sistema.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Listado de componentes obtenido exitosamente",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "success": {
+                            "summary": "Listado exitoso",
+                            "value": [
+                                {"code": "API"},
+                                {"code": "BACKEND"},
+                                {"code": "FRONTEND"},
+                                {"code": "DATABASE"}
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+
+        401: {
+            "description": "Error de autenticación",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "summary": "Token inválido o expirado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INVALID_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        },
+                        "missing_token": {
+                            "summary": "Token no proporcionado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_MISSING_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        403: {
+            "description": "Error de autorización",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "insufficient_permissions": {
+                            "summary": "Permisos insuficientes",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INSUFFICIENT_PERMISSIONS",
+                                    "meta": {
+                                        "required_permission": "031"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        500: {
+            "description": "Error interno del servidor",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "internal_error": {
+                            "summary": "Error inesperado",
+                            "value": {
+                                "detail": {
+                                    "code": "INTERNAL_SERVER_ERROR",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
+def list_error_components(
+    db: Session = Depends(get_db),
+    service: AuditService = Depends(AuditService),
+    current_user=Depends(require_permission("031"))
+):
+    """
+    Obtiene la lista de componentes donde se han generado errores en proyectos externos.
+
+    Este endpoint retorna los diferentes componentes técnicos del sistema
+    donde se originan los errores, permitiendo su uso en filtros dentro
+    del módulo de monitoreo de errores.
+
+    Args:
+        db (Session):
+            Sesión activa de base de datos.
+
+        service (AuditService):
+            Servicio encargado de la lógica de auditoría y errores.
+
+        current_user:
+            Usuario autenticado que realiza la solicitud.
+            Debe contar con permiso "031".
+
+    Returns:
+        List[dict]:
+            Lista de componentes:
+            - code: Nombre del componente (ej: API, BACKEND, FRONTEND)
+
+    Raises:
+        HTTPException 401:
+            - AUTH_INVALID_TOKEN
+            - AUTH_MISSING_TOKEN
+
+        HTTPException 403:
+            - AUTH_INSUFFICIENT_PERMISSIONS
+
+        HTTPException 500:
+            - INTERNAL_SERVER_ERROR
+
+    Process Flow:
+        1. Validación de permisos del usuario ("031")
+        2. Consulta de componentes en el servicio
+        3. Filtrado de valores nulos o vacíos
+        4. Transformación a lista de códigos
+        5. Retorno de resultados
+
+    Notes:
+        - Se utiliza principalmente para poblar filtros en la interfaz de errores
+        - Representa el origen técnico del error (API, backend, frontend, etc.)
+        - Excluye valores nulos o vacíos
+        - No requiere paginación
+    """
+    components = service.get_error_components(db)
+
+    return [
+        {"code": component.component}
+        for component in components
+        if component.component
+    ]
+
+@router.get(
+    "/errors/codes",
+    summary="Listar códigos de error",
+    description="Obtiene la lista de códigos de error registrados en proyectos externos para ser utilizados en filtros dentro del sistema.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Listado de códigos de error obtenido exitosamente",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "success": {
+                            "summary": "Listado exitoso",
+                            "value": [
+                                {"code": "NETWORK_ERROR"},
+                                {"code": "TIMEOUT"},
+                                {"code": "VALIDATION_ERROR"},
+                                {"code": "AUTH_ERROR"}
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+
+        401: {
+            "description": "Error de autenticación",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "summary": "Token inválido o expirado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INVALID_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        },
+                        "missing_token": {
+                            "summary": "Token no proporcionado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_MISSING_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        403: {
+            "description": "Error de autorización",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "insufficient_permissions": {
+                            "summary": "Permisos insuficientes",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INSUFFICIENT_PERMISSIONS",
+                                    "meta": {
+                                        "required_permission": "031"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        500: {
+            "description": "Error interno del servidor",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "internal_error": {
+                            "summary": "Error inesperado",
+                            "value": {
+                                "detail": {
+                                    "code": "INTERNAL_SERVER_ERROR",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
+def list_error_codes(
+    db: Session = Depends(get_db),
+    service: AuditService = Depends(AuditService),
+    current_user=Depends(require_permission("031"))
+):
+    """
+    Obtiene la lista de códigos de error registrados en proyectos externos.
+
+    Este endpoint retorna los identificadores técnicos de los errores,
+    permitiendo su uso en filtros dentro del módulo de monitoreo.
+
+    Args:
+        db (Session):
+            Sesión activa de base de datos.
+
+        service (AuditService):
+            Servicio encargado de la lógica de auditoría y errores.
+
+        current_user:
+            Usuario autenticado que realiza la solicitud.
+            Debe contar con permiso "031".
+
+    Returns:
+        List[dict]:
+            Lista de códigos de error:
+            - code: Código técnico del error (ej: NETWORK_ERROR, TIMEOUT)
+
+    Raises:
+        HTTPException 401:
+            - AUTH_INVALID_TOKEN
+            - AUTH_MISSING_TOKEN
+
+        HTTPException 403:
+            - AUTH_INSUFFICIENT_PERMISSIONS
+
+        HTTPException 500:
+            - INTERNAL_SERVER_ERROR
+
+    Process Flow:
+        1. Validación de permisos del usuario ("031")
+        2. Consulta de códigos de error en el servicio
+        3. Filtrado de valores nulos o vacíos
+        4. Transformación a lista de códigos
+        5. Retorno de resultados
+
+    Notes:
+        - Se utiliza principalmente para poblar filtros en la interfaz de errores
+        - Representa identificadores técnicos de fallos
+        - Excluye valores nulos o vacíos
+        - No requiere paginación
+    """
+    codes = service.get_error_codes(db)
+
+    return [
+        {"code": code.error_code}
+        for code in codes
+        if code.error_code
+    ]
+
+
+@router.get(
+    "/errors/severity",
+    summary="Listar niveles de severidad de errores",
+    description="Obtiene la lista de niveles de severidad registrados en errores de proyectos externos para ser utilizados en filtros del sistema.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Listado de severidades obtenido exitosamente",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "success": {
+                            "summary": "Listado exitoso",
+                            "value": [
+                                {"code": "CRITICAL"},
+                                {"code": "WARNING"},
+                                {"code": "INFO"}
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+
+        401: {
+            "description": "Error de autenticación",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_token": {
+                            "summary": "Token inválido o expirado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INVALID_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        },
+                        "missing_token": {
+                            "summary": "Token no proporcionado",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_MISSING_TOKEN",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        403: {
+            "description": "Error de autorización",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "insufficient_permissions": {
+                            "summary": "Permisos insuficientes",
+                            "value": {
+                                "detail": {
+                                    "code": "AUTH_INSUFFICIENT_PERMISSIONS",
+                                    "meta": {
+                                        "required_permission": "031"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        500: {
+            "description": "Error interno del servidor",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "internal_error": {
+                            "summary": "Error inesperado",
+                            "value": {
+                                "detail": {
+                                    "code": "INTERNAL_SERVER_ERROR",
+                                    "meta": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
+def list_error_severity(
+    db: Session = Depends(get_db),
+    service: AuditService = Depends(AuditService),
+    current_user=Depends(require_permission("031"))
+):
+    """
+    Obtiene la lista de niveles de severidad de errores registrados en proyectos externos.
+
+    Este endpoint retorna los niveles de impacto o criticidad de los errores,
+    permitiendo su uso en filtros dentro del módulo de monitoreo.
+
+    Args:
+        db (Session):
+            Sesión activa de base de datos.
+
+        service (AuditService):
+            Servicio encargado de la lógica de auditoría y errores.
+
+        current_user:
+            Usuario autenticado que realiza la solicitud.
+            Debe contar con permiso "031".
+
+    Returns:
+        List[dict]:
+            Lista de niveles de severidad:
+            - code: Nivel de severidad (ej: CRITICAL, WARNING, INFO)
+
+    Raises:
+        HTTPException 401:
+            - AUTH_INVALID_TOKEN
+            - AUTH_MISSING_TOKEN
+
+        HTTPException 403:
+            - AUTH_INSUFFICIENT_PERMISSIONS
+
+        HTTPException 500:
+            - INTERNAL_SERVER_ERROR
+
+    Process Flow:
+        1. Validación de permisos del usuario ("031")
+        2. Consulta de severidades en el servicio
+        3. Filtrado de valores nulos o vacíos
+        4. Transformación a lista de códigos
+        5. Retorno de resultados
+
+    Notes:
+        - Se utiliza principalmente para poblar filtros en la interfaz de errores
+        - Representa el nivel de impacto o criticidad del error
+        - Excluye valores nulos o vacíos
+        - No requiere paginación
+    """
+    severities = service.get_error_severity(db)
+
+    return [
+        {"code": severity.severity}
+        for severity in severities
+        if severity.severity
+    ]
