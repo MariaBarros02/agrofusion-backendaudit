@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
 
 # Engine principal de SQLAlchemy construido a partir de la URL de configuración
-engine = create_engine(settings.database_url)
+engine = create_engine(settings.database_url,  pool_pre_ping=True)
 
 # Fábrica de sesiones para manejar transacciones de base de datos
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)

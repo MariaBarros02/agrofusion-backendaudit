@@ -92,5 +92,11 @@ class Users(Base):
     
     # Versión del registro para control de concurrencia
     row_version = Column(Integer, default=1)
-
+    #Tiempo de bloqueo
+    blocked_until = Column(DateTime(timezone=True))
     
+    sessions = relationship(
+        "AuthSession",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
