@@ -76,5 +76,9 @@ jobs:
         with:
           context: .
           push: true
+<<<<<<< HEAD
           # IMPORTANTE: Aquí arreglamos también el nombre y la etiqueta de la Tarea 2 para que quede perfecto
           tags: ghcr.io/mariabarros02/agrofusion-audit:1.0.0-staging
+=======
+          tags: ghcr.io/mariabarros02/agrofusion-backendaudit:latest
+>>>>>>> 8566121348a5cb5dea6adf6020638df70af0fa25
