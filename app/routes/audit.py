@@ -866,7 +866,7 @@ def list_events(
 
     events = repository.list_events(db)
 
-    return [{"code": event.action_code} for event in events]
+    return [{"code": event.action_code, "label": event.label} for event in events]
 
 @router.get(
     "/results",

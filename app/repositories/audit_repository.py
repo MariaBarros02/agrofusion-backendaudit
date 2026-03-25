@@ -127,8 +127,14 @@ class AuditRepository:
             """
 
             query = (
-             db.query(AuditLog, Users.name)
+                db.query(
+                    AuditLog,
+                    Users.name,
+                    CatTerm.label,
+                    CatTerm.description
+                )
                 .outerjoin(Users, Users.user_id == AuditLog.actor_id)
+                .outerjoin(CatTerm, CatTerm.code == AuditLog.action_code) 
             )
 
             if search:
@@ -202,11 +208,18 @@ class AuditRepository:
         """
 
         events = (
-            db.query(AuditLog.action_code)
-            .distinct()
-            .order_by(AuditLog.action_code.asc())
-            .all()
+        db.query(
+            AuditLog.action_code,
+            CatTerm.label
         )
+        .join(
+            CatTerm,
+            CatTerm.code == AuditLog.action_code
+        )
+        .distinct()
+        .order_by(AuditLog.action_code.asc())
+        .all()
+    )
 
         return events
     

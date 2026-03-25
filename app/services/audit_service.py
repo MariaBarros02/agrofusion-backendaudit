@@ -70,12 +70,13 @@ class AuditService:
 
         items = []
 
-        for log, user_name in logs:
+        for log, user_name, label, description in logs:
             items.append({
                 "event_id": log.audit_id,
                 "origin": log.module_code,
                 "result": log.outcome,
-                "action": log.action_code,
+                "action": label,
+                "description": description,
                 "user": user_name if user_name else log.actor_id,
                 "message": log.target_json,
                 "date": log.created_at
