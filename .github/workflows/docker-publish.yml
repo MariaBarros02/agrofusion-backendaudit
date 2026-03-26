@@ -27,6 +27,10 @@ jobs:
       # NUEVO: Preparamos el motor de Docker
       - name: Configurar Docker Buildx
         uses: docker/setup-buildx-action@v3
+      
+      # PASO 0: Generar un ID único basado en el commit para versionar la imagen
+      - name: 0. Generar etiqueta única de versión (Short SHA)
+        run: echo "SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_ENV
 
       # PASO 1: Construimos la imagen pero la dejamos en revisión (load: true)
       - name: 1. Construir imagen localmente (Para escanear)
@@ -34,7 +38,7 @@ jobs:
         with:
           context: .
           load: true 
-          tags: local-image:test
+          tags: local-image:test, ghcr.io/mariabarros02/agrofusion-audit:dev-${{ env.SHORT_SHA }}
 
       # PASO 2: Trivy busca errores Altos y nos da una advertencia visual
       - name: 2. Escaneo Trivy (Nivel HIGH - Advertencia)
@@ -77,4 +81,4 @@ jobs:
           context: .
           push: true
           # IMPORTANTE: Aquí arreglamos también el nombre y la etiqueta de la Tarea 2 para que quede perfecto
-          tags: ghcr.io/mariabarros02/agrofusion-audit:1.0.0-staging
+          tags: ghcr.io/mariabarros02/agrofusion-audit:dev-${{ env.SHORT_SHA }}
