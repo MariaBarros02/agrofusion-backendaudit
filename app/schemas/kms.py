@@ -20,7 +20,10 @@ from app.models.af_kms_key_rotations import RotationReason
 class KeyCreateRequest(BaseModel):
     """Request para crear una nueva clave criptográfica."""
     
-    project_id: UUID = Field(..., description="ID del proyecto/tenant")
+    project_id: Optional[UUID] = Field(
+        None,
+        description="ID del proyecto/tenant (opcional; si no se envía, se usa AGROFUSION)",
+    )
     key_alias: str = Field(..., min_length=1, max_length=255, description="Alias amigable de la clave")
     algorithm: str = Field(..., description="Algoritmo criptográfico: RSA-2048, RSA-4096, ECDSA-P256, ECDSA-P384")
     key_purpose: str = Field(..., description="Propósito de la clave: signing, encryption, both")

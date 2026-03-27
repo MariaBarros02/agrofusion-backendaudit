@@ -20,6 +20,7 @@ from cryptography.hazmat.backends import default_backend
 from sqlalchemy.orm import Session
 
 from app.repositories.kms_repository import KmsRepository
+from app.repositories.audit_repository import AuditRepository
 from app.models.af_kms_keys import KeyAlgorithm, KeyPurpose, KeyStatus
 from app.models.af_kms_signatures import HashAlgorithm, SignatureFormat
 from app.models.af_kms_signature_validations import ValidationResult
@@ -35,7 +36,17 @@ class KmsService:
 
     def __init__(self):
         self.kms_repo = KmsRepository()
+        self.audit_repo = AuditRepository()
         self.backend = default_backend()
+
+    def get_agrofusion_project(self, db: Session):
+        """
+        Obtiene el proyecto interno AGROFUSION para operaciones de auditoría.
+        """
+        project = self.audit_repo.get_project_by_code(db, code="AGROFUSION")
+        if not project:
+            raise RuntimeError("Project AGROFUSION not found")
+        return project
 
     # ==================== Generación de Claves ====================
 
@@ -206,12 +217,9 @@ class KmsService:
         if not key:
             raise audit_error("KEY_NOT_FOUND", status.HTTP_404_NOT_FOUND)
 
-        # Usar siempre el proyecto de auditoría por defecto si no se especifica
-        # El usuario indicó que el proyecto válido en BD es:
-        # a3747ffe-f4c2-4bfc-aafb-ea97f5aeb68e
-        from uuid import UUID as _UUID
-
-        default_project_id = _UUID("a3747ffe-f4c2-4bfc-aafb-ea97f5aeb68e")
+        # Usar siempre el proyecto AGROFUSION por defecto si no se especifica.
+        # No dependemos de un UUID hardcodeado para evitar acoplamiento a datos.
+        default_project_id = self.get_agrofusion_project(db).af_project_id
 
         if not project_id:
             project_id = default_project_id

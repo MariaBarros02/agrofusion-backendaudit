@@ -139,6 +139,38 @@ def _token_validation_responses() -> dict:
     }
 
 
+def _log_kms_event(
+    db: Session,
+    *,
+    request: Request,
+    actor_id: Optional[UUID],
+    action_code: str,
+    metadata: Optional[dict] = None,
+    outcome: str = "success",
+) -> None:
+    """
+    Registra auditoría para operaciones KMS sin interrumpir la operación principal
+    en caso de fallos de catálogo/configuración de auditoría.
+    """
+    service = KmsService()
+    audit_repo = AuditRepository()
+    try:
+        project = service.get_agrofusion_project(db)
+        audit_repo.log_event(
+            db=db,
+            action_code=action_code,
+            outcome=outcome,
+            module_code="KMS",
+            project_id=project.af_project_id,
+            actor_id=actor_id,
+            ip=request.client.host if request and request.client else None,
+            user_agent=request.headers.get("user-agent") if request else None,
+            metadata=metadata or {},
+        )
+    except Exception as audit_exc:
+        print(f"[AUDIT_WARN] {action_code}: {audit_exc}")
+
+
 # ==================== Endpoints de Claves ====================
 
 @router.post(
@@ -222,17 +254,21 @@ def create_key(
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """
-    Crea una nueva clave criptográfica para un proyecto.
+    Crea una nueva clave criptográfica.
 
     Requiere permisos de administrador (KMS_ADMIN o AUDIT_SECURITY).
     La clave privada se almacena de forma segura en el KMS.
+    Si no se envía `project_id`, se usa el proyecto interno AGROFUSION.
     """
     service = KmsService()
-    audit_repo = AuditRepository()
     try:
+        project_id = request.project_id
+        if project_id is None:
+            project_id = service.get_agrofusion_project(db).af_project_id
+
         key = service.create_key(
             db=db,
-            project_id=request.project_id,
+            project_id=project_id,
             key_alias=request.key_alias,
             algorithm=request.algorithm,
             key_purpose=request.key_purpose,
@@ -241,16 +277,12 @@ def create_key(
         )
         
         # TODO: Registrar evento en af_audit_log
-        audit_repo.log_event(
+        _log_kms_event(
             db=db,
-            action_code="CREATE_CRYPTOGRAPHIC_KEY",
-            outcome="success",
-            module_code="KMS",
-            project_id=request.project_id,
+            request=infoRequest,
             actor_id=current_user_id,
-            ip=infoRequest.client.host,
-            user_agent=infoRequest.headers.get("user-agent"),
-            metadata={"key_id": str(key.key_id), "algorithm": request.algorithm.value}
+            action_code="CREATE_CRYPTOGRAPHIC_KEY",
+            metadata={"key_id": str(key.key_id), "algorithm": request.algorithm.value},
         )
         
         return key
@@ -553,6 +585,7 @@ def get_active_keys(
     },
 )
 def create_certificate(
+    infoRequest: Request,
     request: CertificateCreateRequest,
     db: Session = Depends(get_db),
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
@@ -582,6 +615,13 @@ def create_certificate(
             fingerprint=fingerprint,
         )
         
+        _log_kms_event(
+            db=db,
+            request=infoRequest,
+            actor_id=current_user_id,
+            action_code="CREATE_CERTIFICATE_X509",
+            metadata={"certificate_id": str(certificate.certificate_id), "key_id": str(request.key_id)},
+        )
         return certificate
     except HTTPException:
         raise
@@ -640,7 +680,6 @@ def create_certificate(
 def get_certificate_by_key(
     key_id: UUID,
     db: Session = Depends(get_db),
-    current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """Obtiene el certificado más reciente asociado a una clave."""
     service = KmsService()
@@ -745,6 +784,7 @@ def get_certificate_by_key(
     },
 )
 def create_signature(
+    infoRequest: Request,
     request: SignatureCreateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("024")),
@@ -757,7 +797,6 @@ def create_signature(
     La firma se realiza usando la clave privada almacenada en el KMS.
     """
     service = KmsService()
-    
     try:
         # No pasar project_id, el servicio lo obtendrá de la clave automáticamente
         signature = service.sign_document(
@@ -774,16 +813,13 @@ def create_signature(
             project_id=None,  # Siempre None, se usará el de la clave
         )
         
-        # TODO: Registrar evento en af_audit_log
-        # audit_repo.log_event(
-        #     db=db,
-        #     action_code="SIGNATURE_CREATED",
-        #     outcome="success",
-        #     module_code="KMS",
-        #     project_id=request.project_id,
-        #     actor_id=current_user_id,
-        #     metadata={"signature_id": str(signature.signature_id), "key_id": str(request.key_id)}
-        # )
+        _log_kms_event(
+            db=db,
+            request=infoRequest,
+            actor_id=current_user_id,
+            action_code="CREATE_DIGITAL_SIGNATURE",
+            metadata={"signature_id": str(signature.signature_id), "key_id": str(request.key_id)},
+        )
         
         return signature
     except HTTPException:
@@ -902,16 +938,6 @@ def verify_signature(
             hash_algorithm=request.hash_algorithm,
             validated_by=current_user_id,
         )
-        
-        # TODO: Registrar evento en af_audit_log
-        # audit_repo.log_event(
-        #     db=db,
-        #     action_code=f"SIGNATURE_{validation.validation_result.upper()}",
-        #     outcome="success" if validation.validation_result == "valid" else "failure",
-        #     module_code="KMS",
-        #     actor_id=current_user_id,
-        #     metadata={"validation_id": str(validation.validation_id), "result": validation.validation_result}
-        # )
         
         return validation
     except HTTPException:
@@ -1131,6 +1157,7 @@ def get_document_signatures(
     },
 )
 def rotate_key(
+    infoRequest: Request,
     key_id: UUID,
     request: KeyRotationRequest,
     db: Session = Depends(get_db),
@@ -1147,7 +1174,6 @@ def rotate_key(
     Requiere permisos de administrador (KMS_ADMIN o AUDIT_SECURITY).
     """
     service = KmsService()
-    
     try:
         rotation, new_key = service.rotate_key(
             db=db,
@@ -1157,21 +1183,18 @@ def rotate_key(
             rotated_by=current_user_id,
         )
         
-        # TODO: Registrar evento en af_audit_log
-        # audit_repo.log_event(
-        #     db=db,
-        #     action_code="KMS_KEY_ROTATED",
-        #     outcome="success",
-        #     module_code="KMS",
-        #     project_id=new_key.project_id,
-        #     actor_id=current_user_id,
-        #     metadata={
-        #         "rotation_id": str(rotation.rotation_id),
-        #         "old_key_id": str(key_id),
-        #         "new_key_id": str(new_key.key_id),
-        #         "reason": request.rotation_reason.value
-        #     }
-        # )
+        _log_kms_event(
+            db=db,
+            request=infoRequest,
+            actor_id=current_user_id,
+            action_code="UPDATE_CRYPTOGRAPHIC_KEY",
+            metadata={
+                "rotation_id": str(rotation.rotation_id),
+                "old_key_id": str(key_id),
+                "new_key_id": str(new_key.key_id),
+                "reason": request.rotation_reason.value,
+            },
+        )
         
         return rotation
     except HTTPException:
@@ -1203,12 +1226,21 @@ def rotate_key(
     },
 )
 def get_key_rotations(
+    infoRequest: Request,
     key_id: UUID,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("025")),
+    current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """Obtiene todas las rotaciones relacionadas con una clave."""
     service = KmsService()
     rotations = service.kms_repo.get_rotations_by_key(db, key_id)
+    _log_kms_event(
+        db=db,
+        request=infoRequest,
+        actor_id=current_user_id,
+        action_code="UPDATE_CRYPTOGRAPHIC_KEY",
+        metadata={"key_id": str(key_id), "total": len(rotations)},
+    )
     return rotations
 
