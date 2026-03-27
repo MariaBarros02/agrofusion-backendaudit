@@ -201,24 +201,35 @@ def get_current_user_id(
     current_user: Optional[dict] = Depends(get_current_user),
 ) -> Optional[UUID]:
     """
-    Extrae el ID del usuario actual desde el token JWT.
+    Extrae el ID del usuario actual desde el contexto de autenticación.
 
     Args:
-        current_user (dict): Payload del token JWT obtenido de get_current_user.
+        current_user (dict): Resultado de get_current_user (incluye el modelo ``user``).
 
     Returns:
-        Optional[UUID]: ID del usuario como UUID, o None si no hay usuario autenticado.
+        Optional[UUID]: ``users.user_id`` como UUID, o None si no se puede resolver.
     """
     if not current_user:
         return None
 
-    # El campo 'sub' del JWT contiene el user_id
+    user = current_user.get("user")
+    if user is not None:
+        uid = getattr(user, "user_id", None)
+        if uid is not None:
+            if isinstance(uid, UUID):
+                return uid
+            try:
+                return UUID(str(uid))
+            except (ValueError, TypeError):
+                pass
+
+    # Compatibilidad: payload JWT con claim ``sub`` (UUID como string)
     user_id_str = current_user.get("sub")
     if not user_id_str:
         return None
 
     try:
-        return UUID(user_id_str)
+        return UUID(str(user_id_str))
     except (ValueError, TypeError):
         return None
 

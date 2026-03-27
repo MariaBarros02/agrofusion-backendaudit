@@ -179,7 +179,7 @@ def _log_kms_event(
     response_model=KeyResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Crear nueva clave criptográfica",
-    description="Genera un nuevo par de claves criptográficas y lo registra en el KMS.",
+    description="Genera un nuevo par de claves criptográficas y lo registra en el KMS bajo el proyecto AGROFUSION.",
     responses={
         **_auth_responses("026"),
         201: {
@@ -259,7 +259,7 @@ def create_key(
 
     Requiere permisos de administrador (KMS_ADMIN o AUDIT_SECURITY).
     La clave privada se almacena de forma segura en el KMS.
-    Si no se envía `project_id`, se usa el proyecto interno AGROFUSION.
+    Por ahora la clave se asocia siempre al proyecto interno AGROFUSION (el backend ignora `project_id` en el body).
     """
 
     
@@ -274,9 +274,7 @@ def create_key(
 
     service = KmsService()
     try:
-        project_id = request.project_id
-        if project_id is None:
-            project_id = service.get_agrofusion_project(db).af_project_id
+        project_id = service.get_agrofusion_project(db).af_project_id
 
         key = service.create_key(
             db=db,
@@ -638,6 +636,7 @@ def create_certificate(
     request: CertificateCreateRequest,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """Registra un certificado X.509 emitido por una CA."""
     service = KmsService()

@@ -22,7 +22,7 @@ class KeyCreateRequest(BaseModel):
     
     project_id: Optional[UUID] = Field(
         None,
-        description="ID del proyecto/tenant (opcional; si no se envía, se usa AGROFUSION)",
+        description="Reservado: por ahora el backend ignora este campo y asocia la clave al proyecto AGROFUSION.",
     )
     key_alias: str = Field(..., min_length=1, max_length=255, description="Alias amigable de la clave")
     algorithm: str = Field(..., description="Algoritmo criptográfico: RSA-2048, RSA-4096, ECDSA-P256, ECDSA-P384")
