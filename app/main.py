@@ -12,6 +12,7 @@ from app.routes.audit import router as router_audit
 from app.routes.kms import router as router_kms
 
 app = FastAPI(
+    root_path="/agrofusion/audit",
     title="API Inmero - Backend Auditory Agrofusion",
     version="1.0.0",
     description="API de auditoría para el backend de Agrofusion, encargada del registro y consulta de eventos y errores."

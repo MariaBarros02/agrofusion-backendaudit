@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import Dict
 from typing import Optional
+from datetime import datetime
 
 class ErrorExtProRequest(BaseModel):
     """
@@ -31,3 +32,30 @@ class ErrorExtProRequest(BaseModel):
     component: Optional[str]
     """Componente del sistema donde se produjo el error"""
 
+
+class ListAuditRequest(BaseModel):
+    page_index: int = 1
+    page_size: int = 10
+
+    search: Optional[str] = None
+    origin: Optional[str] = None
+    result: Optional[str] = None
+    user_id: Optional[str] = None
+    event_type: Optional[str] = None
+
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+
+class ListErrorsRequest(BaseModel):
+
+    page_index: int = 1
+    page_size: int = 10
+
+    search: Optional[str] = None
+    severity: Optional[str] = None
+    project: Optional[str] = None
+    component: Optional[str] = None
+    error_code: Optional[str] = None
+
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None

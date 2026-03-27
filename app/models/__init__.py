@@ -19,3 +19,12 @@ from app.models.af_audit_log import AuditLog
 from app.models.af_projects import Project
 from app.models.af_auth_sessions import AuthSession
 from app.models.af_auth_tokens import AuthToken
+from app.models.af_email_queue import AfEmailQueue
+from app.models.af_email_send_log import EmailSendLog
+from app.models.af_email_templates import AfEmailTemplate
+from app.models.af_modules import AfModule
+from app.models.af_submodules import AfSubmodule
+from app.models.af_permissions import AfPermission
+from app.models.af_roles_permissions import AfRolePermission 
+from app.models.af_roles import AfRole
+

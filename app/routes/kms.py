@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
+from app.services.permissions_service import PermissionsService
 from uuid import UUID
 import hashlib
 import traceback
@@ -31,7 +32,7 @@ from app.schemas.kms import (
     SignatureListResponse,
 )
 from app.core.errors import audit_error
-from app.dependencies.auth import get_current_user_id, require_permission
+from app.dependencies.auth import get_current_user_id, get_current_user
 from fastapi import status
 from app.repositories.audit_repository import AuditRepository
 
@@ -250,7 +251,7 @@ def create_key(
     infoRequest: Request,
     request: KeyCreateRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("026")),
+    current_user=Depends(get_current_user),
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """
@@ -260,6 +261,17 @@ def create_key(
     La clave privada se almacena de forma segura en el KMS.
     Si no se envía `project_id`, se usa el proyecto interno AGROFUSION.
     """
+
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "026"  # Código del permiso para crear una clave criptografica
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
     service = KmsService()
     try:
         project_id = request.project_id
@@ -345,9 +357,21 @@ def create_key(
 def get_key(
     key_id: UUID,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("027")),
+    current_user=Depends(get_current_user)
+
 ):
     """Obtiene información pública de una clave (sin datos sensibles)."""
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "027"  # Código del permiso para listar una clave criptografica
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+    
     service = KmsService()
     key = service.kms_repo.get_key_by_id(db, key_id)
     
@@ -399,9 +423,22 @@ def list_keys(
     project_id: UUID = Query(..., description="ID del proyecto"),
     status_filter: Optional[str] = Query(None, description="Filtro por estado: active, rotated, revoked, expired"),
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("027")),
+    current_user=Depends(get_current_user)
+
 ):
     """Lista las claves de un proyecto con filtros opcionales."""
+    
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "027"  # Código del permiso para listar claves criptograficas
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+    
     service = KmsService()
     
     from app.models.af_kms_keys import KeyStatus
@@ -470,9 +507,21 @@ def get_active_keys(
     project_id: UUID,
     key_purpose: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("027")),
+    current_user=Depends(get_current_user)
+
 ):
     """Obtiene claves activas de un proyecto, opcionalmente filtradas por propósito."""
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "027"  # Código del permiso para listar claves criptograficas
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+    
     service = KmsService()
     
     from app.models.af_kms_keys import KeyPurpose
@@ -588,7 +637,7 @@ def create_certificate(
     infoRequest: Request,
     request: CertificateCreateRequest,
     db: Session = Depends(get_db),
-    current_user_id: Optional[UUID] = Depends(get_current_user_id),
+    current_user=Depends(get_current_user),
 ):
     """Registra un certificado X.509 emitido por una CA."""
     service = KmsService()
@@ -680,8 +729,9 @@ def create_certificate(
 def get_certificate_by_key(
     key_id: UUID,
     db: Session = Depends(get_db),
+    _current_user=Depends(get_current_user),
 ):
-    """Obtiene el certificado más reciente asociado a una clave."""
+    """Obtiene el certificado más reciente asociado a una clave (requiere sesión autenticada)."""
     service = KmsService()
     certificate = service.kms_repo.get_certificate_by_key_id(db, key_id)
     return certificate
@@ -787,7 +837,7 @@ def create_signature(
     infoRequest: Request,
     request: SignatureCreateRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("024")),
+    current_user=Depends(get_current_user),
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """
@@ -796,6 +846,18 @@ def create_signature(
     El documento debe ser hasheado previamente usando SHA-256, SHA-384 o SHA-512.
     La firma se realiza usando la clave privada almacenada en el KMS.
     """
+
+
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "024"  # Código del permiso para crear firma digital
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
     service = KmsService()
     try:
         # No pasar project_id, el servicio lo obtendrá de la clave automáticamente
@@ -917,7 +979,7 @@ def create_signature(
 def verify_signature(
     request: SignatureVerifyRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("028")),
+    current_user=Depends(get_current_user),
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """
@@ -926,6 +988,17 @@ def verify_signature(
     Verifica que la firma corresponda al hash del documento
     usando la clave pública asociada.
     """
+
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "028"  # Código del permiso para verificar firma digital
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
     service = KmsService()
     
     try:
@@ -999,9 +1072,21 @@ def verify_signature(
 def get_signature(
     signature_id: UUID,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("028")),
+    current_user=Depends(get_current_user)
+
 ):
     """Obtiene información de una firma digital."""
+
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "028"  # Código del permiso para listar fitma digital
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
     service = KmsService()
     signature = service.kms_repo.get_signature_by_id(db, signature_id)
     
@@ -1038,9 +1123,21 @@ def list_signatures(
     limit: int = Query(100, ge=1, le=1000, description="Número máximo de resultados"),
     offset: int = Query(0, ge=0, description="Número de resultados a saltar"),
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("028")),
+    current_user=Depends(get_current_user)
+
 ):
     """Lista las firmas de un proyecto con paginación."""
+
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "028"  # Código del permiso para listar firma digital
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
     service = KmsService()
     
     signatures = service.kms_repo.get_signatures_by_project(
@@ -1076,9 +1173,21 @@ def list_signatures(
 def get_document_signatures(
     document_id: UUID,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("028")),
+    current_user=Depends(get_current_user)
+
 ):
     """Obtiene todas las firmas de un documento."""
+
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "028"  # Código del permiso para listar firmas por un documento
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
     service = KmsService()
     signatures = service.kms_repo.get_signatures_by_document(db, document_id)
     return signatures
@@ -1161,7 +1270,7 @@ def rotate_key(
     key_id: UUID,
     request: KeyRotationRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("025")),
+    current_user=Depends(get_current_user),
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """
@@ -1173,6 +1282,17 @@ def rotate_key(
     
     Requiere permisos de administrador (KMS_ADMIN o AUDIT_SECURITY).
     """
+
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "025"  # Código del permiso para rotar clave criptografica
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
     service = KmsService()
     try:
         rotation, new_key = service.rotate_key(
@@ -1229,10 +1349,21 @@ def get_key_rotations(
     infoRequest: Request,
     key_id: UUID,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("025")),
+    current_user=Depends(get_current_user),
     current_user_id: Optional[UUID] = Depends(get_current_user_id),
 ):
     """Obtiene todas las rotaciones relacionadas con una clave."""
+
+    
+    perm_service =  PermissionsService()
+
+    if not perm_service.validate_permission(
+            db, 
+            current_user.get('role'), 
+            "025"  # Código del permiso para listar el historial de rotaciones de una clave
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
     service = KmsService()
     rotations = service.kms_repo.get_rotations_by_key(db, key_id)
     _log_kms_event(
