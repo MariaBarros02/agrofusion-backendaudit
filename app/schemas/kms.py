@@ -5,7 +5,7 @@ Define los modelos de validación de entrada y salida
 para las operaciones de gestión de claves y firmas digitales.
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, computed_field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
@@ -20,7 +20,10 @@ from app.models.af_kms_key_rotations import RotationReason
 class KeyCreateRequest(BaseModel):
     """Request para crear una nueva clave criptográfica."""
     
-    project_id: UUID = Field(..., description="ID del proyecto/tenant")
+    project_id: Optional[UUID] = Field(
+        None,
+        description="Reservado: por ahora el backend ignora este campo y asocia la clave al proyecto AGROFUSION.",
+    )
     key_alias: str = Field(..., min_length=1, max_length=255, description="Alias amigable de la clave")
     algorithm: str = Field(..., description="Algoritmo criptográfico: RSA-2048, RSA-4096, ECDSA-P256, ECDSA-P384")
     key_purpose: str = Field(..., description="Propósito de la clave: signing, encryption, both")
@@ -156,7 +159,9 @@ class SignatureCreateRequest(BaseModel):
 
 class SignatureResponse(BaseModel):
     """Response con información de una firma digital."""
-    
+
+    model_config = ConfigDict(from_attributes=True)
+
     signature_id: UUID
     key_id: UUID
     document_hash: str
@@ -169,11 +174,13 @@ class SignatureResponse(BaseModel):
     document_type: Optional[str]
     signer_user_id: Optional[UUID]
     signing_reason: Optional[str]
-    project_id: UUID
-    created_at: datetime
-    
-    class Config:
-        from_attributes = True
+    project_id: Optional[UUID] = None
+
+    @computed_field
+    @property
+    def created_at(self) -> datetime:
+        """Misma marca temporal que `signed_at` si la tabla no tiene columna `created_at`."""
+        return self.signed_at
 
 
 class SignatureVerifyRequest(BaseModel):
@@ -228,17 +235,16 @@ class KeyRotationRequest(BaseModel):
 
 class KeyRotationResponse(BaseModel):
     """Response con información de una rotación de clave."""
-    
+
+    model_config = ConfigDict(from_attributes=True)
+
     rotation_id: UUID
     old_key_id: UUID
     new_key_id: UUID
     rotation_reason: RotationReason
     grace_period_days: int
-    rotated_by: UUID
+    rotated_by: Optional[UUID] = None
     rotated_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 
 # ==================== Schemas para Listados ====================

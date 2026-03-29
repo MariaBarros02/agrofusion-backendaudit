@@ -311,7 +311,7 @@ class KmsRepository:
         new_key_id: UUID,
         rotation_reason: RotationReason,
         grace_period_days: int,
-        rotated_by: UUID,
+        rotated_by: Optional[UUID],
     ) -> AfKmsKeyRotation:
         """Crea un nuevo registro de rotación."""
         rotation = AfKmsKeyRotation(
