@@ -38,7 +38,6 @@ class AfKmsSignatureValidation(Base):
     """
 
     __tablename__ = "af_kms_signature_validations"
-    __table_args__ = {"schema": "public"}
 
     # Identificador único de la validación
     validation_id = Column(
@@ -82,18 +81,12 @@ class AfKmsSignatureValidation(Base):
         index=True,
     )
 
-    # Fecha de creación del registro
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    # Índices para optimizar búsquedas
+    # Índices + schema (un solo __table_args__: la segunda asignación no debe pisar el schema)
     __table_args__ = (
         Index("ix_kms_val_sig", "signature_id"),
         Index("ix_kms_val_result", "validation_result"),
         Index("ix_kms_val_at", "validated_at"),
+        {"schema": "public"},
     )
 
     def __repr__(self) -> str:

@@ -45,7 +45,6 @@ class AfKmsSignature(Base):
     """
 
     __tablename__ = "af_kms_signatures"
-    __table_args__ = {"schema": "public"}
 
     # Identificador único de la firma
     signature_id = Column(
@@ -136,20 +135,14 @@ class AfKmsSignature(Base):
         index=True,
     )
 
-    # Fecha de creación del registro
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    # Índices para optimizar búsquedas
+    # Índices + schema (un solo __table_args__)
     __table_args__ = (
         Index("ix_kms_sig_key", "key_id"),
         Index("ix_kms_sig_doc", "document_id"),
         Index("ix_kms_sig_type", "document_type"),
         Index("ix_kms_sig_project", "project_id"),
         Index("ix_kms_sig_hash", "document_hash"),
+        {"schema": "public"},
     )
 
     def __repr__(self) -> str:

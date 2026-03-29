@@ -28,7 +28,6 @@ class AfKmsCertificate(Base):
     """
 
     __tablename__ = "af_kms_certificates"
-    __table_args__ = {"schema": "public"}
 
     # Identificador único del certificado
     certificate_id = Column(
@@ -98,10 +97,10 @@ class AfKmsCertificate(Base):
         server_default=func.now(),
     )
 
-    # Índices para optimizar búsquedas
     __table_args__ = (
         Index("ix_kms_cert_key", "key_id"),
         Index("ix_kms_cert_valid_to", "valid_to"),
+        {"schema": "public"},
     )
 
     def __repr__(self) -> str:

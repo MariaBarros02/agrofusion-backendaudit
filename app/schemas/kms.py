@@ -5,7 +5,7 @@ Define los modelos de validación de entrada y salida
 para las operaciones de gestión de claves y firmas digitales.
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, computed_field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
@@ -159,7 +159,9 @@ class SignatureCreateRequest(BaseModel):
 
 class SignatureResponse(BaseModel):
     """Response con información de una firma digital."""
-    
+
+    model_config = ConfigDict(from_attributes=True)
+
     signature_id: UUID
     key_id: UUID
     document_hash: str
@@ -172,11 +174,13 @@ class SignatureResponse(BaseModel):
     document_type: Optional[str]
     signer_user_id: Optional[UUID]
     signing_reason: Optional[str]
-    project_id: UUID
-    created_at: datetime
-    
-    class Config:
-        from_attributes = True
+    project_id: Optional[UUID] = None
+
+    @computed_field
+    @property
+    def created_at(self) -> datetime:
+        """Misma marca temporal que `signed_at` si la tabla no tiene columna `created_at`."""
+        return self.signed_at
 
 
 class SignatureVerifyRequest(BaseModel):
@@ -231,17 +235,16 @@ class KeyRotationRequest(BaseModel):
 
 class KeyRotationResponse(BaseModel):
     """Response con información de una rotación de clave."""
-    
+
+    model_config = ConfigDict(from_attributes=True)
+
     rotation_id: UUID
     old_key_id: UUID
     new_key_id: UUID
     rotation_reason: RotationReason
     grace_period_days: int
-    rotated_by: UUID
+    rotated_by: Optional[UUID] = None
     rotated_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 
 # ==================== Schemas para Listados ====================

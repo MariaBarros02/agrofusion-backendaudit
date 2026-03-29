@@ -418,7 +418,10 @@ def get_key(
     },
 )
 def list_keys(
-    project_id: UUID = Query(..., description="ID del proyecto"),
+    project_id: Optional[UUID] = Query(
+        None,
+        description="ID del proyecto; si se omite, se usa el proyecto interno AGROFUSION",
+    ),
     status_filter: Optional[str] = Query(None, description="Filtro por estado: active, rotated, revoked, expired"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
@@ -438,6 +441,8 @@ def list_keys(
 
     
     service = KmsService()
+    if project_id is None:
+        project_id = service.get_agrofusion_project(db).af_project_id
     
     from app.models.af_kms_keys import KeyStatus
     status_enum = None
@@ -1015,7 +1020,12 @@ def verify_signature(
     except HTTPException:
         raise
     except Exception as e:
-        raise audit_error("SIGNATURE_VERIFICATION_FAILED", status.HTTP_500_INTERNAL_SERVER_ERROR)
+        traceback.print_exc()
+        raise audit_error(
+            "SIGNATURE_VERIFICATION_FAILED",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            {"error": str(e)},
+        )
 
 
 @router.get(
@@ -1118,7 +1128,10 @@ def get_signature(
     },
 )
 def list_signatures(
-    project_id: UUID = Query(..., description="ID del proyecto"),
+    project_id: Optional[UUID] = Query(
+        None,
+        description="ID del proyecto; si se omite, se usa el proyecto interno AGROFUSION",
+    ),
     limit: int = Query(100, ge=1, le=1000, description="Número máximo de resultados"),
     offset: int = Query(0, ge=0, description="Número de resultados a saltar"),
     db: Session = Depends(get_db),
@@ -1138,6 +1151,8 @@ def list_signatures(
         audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
 
     service = KmsService()
+    if project_id is None:
+        project_id = service.get_agrofusion_project(db).af_project_id
     
     signatures = service.kms_repo.get_signatures_by_project(
         db, project_id, limit, offset
