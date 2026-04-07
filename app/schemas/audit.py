@@ -1,7 +1,7 @@
-from pydantic import BaseModel
-from typing import Dict
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Dict, List, Optional
 from datetime import datetime
+from enum import Enum
 
 class ErrorExtProRequest(BaseModel):
     """
@@ -59,3 +59,60 @@ class ListErrorsRequest(BaseModel):
 
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
+
+
+class ExportFormat(str, Enum):
+    CSV = "CSV"
+    XLSX = "XLSX"
+    PDF = "PDF"
+    JSONL = "JSONL"
+
+
+class ExportPriority(str, Enum):
+    normal = "normal"
+    high = "high"
+
+
+class CreateAuditExportRequest(BaseModel):
+    """Solicitud de exportación asíncrona (RF-INT-08)."""
+
+    format: ExportFormat
+    priority: ExportPriority = ExportPriority.normal
+    export_name: Optional[str] = None
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
+    user_ids: Optional[List[str]] = None
+    project_ids: Optional[List[str]] = None
+    module_codes: Optional[List[str]] = None
+    action_codes: Optional[List[str]] = None
+    outcomes: Optional[List[str]] = None
+    entity_types: Optional[List[str]] = None
+    search: Optional[str] = None
+    fields: Optional[List[str]] = None
+    mask_pii: bool = True
+    include_sensitive: bool = False
+
+
+class AuditExportJobResponse(BaseModel):
+    export_id: str
+    status: str
+    format: str
+    requested_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    failed_at: Optional[str] = None
+    export_name: Optional[str] = None
+    actual_records: Optional[int] = None
+    file_size_bytes: Optional[int] = None
+    file_hash: Optional[str] = None
+    digital_signature: Optional[str] = None
+    error_message: Optional[str] = None
+    retry_count: int = 0
+    download_url: Optional[str] = None
+    download_expires_at: Optional[str] = None
+    download_token: Optional[str] = None
+    download_filename: Optional[str] = None
+
+
+class AuditExportDownloadQuery(BaseModel):
+    token: str = Field(..., description="Token JWT de descarga temporal")

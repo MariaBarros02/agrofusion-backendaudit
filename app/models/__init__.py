@@ -27,4 +27,5 @@ from app.models.af_submodules import AfSubmodule
 from app.models.af_permissions import AfPermission
 from app.models.af_roles_permissions import AfRolePermission 
 from app.models.af_roles import AfRole
+from app.models.af_audit_exports import AfAuditExport
 

@@ -7,6 +7,7 @@ Este módulo contiene funciones para:
 """
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 from http.client import HTTPException
 
 from fastapi import status
@@ -65,3 +66,38 @@ def decode_access_token(token: str) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token inválido"
         )
+
+
+EXPORT_DOWNLOAD_JWT_TYP = "audit_export_dl"
+
+
+def create_export_download_token(
+    *,
+    export_id: UUID,
+    user_id: UUID,
+    project_id: UUID | None,
+    ttl_minutes: int,
+) -> str:
+    """
+    JWT de un solo uso conceptual para descarga autenticada de un archivo de exportación.
+    """
+    exp = datetime.now(timezone.utc) + timedelta(minutes=max(1, ttl_minutes))
+    payload = {
+        "typ": EXPORT_DOWNLOAD_JWT_TYP,
+        "eid": str(export_id),
+        "sub": str(user_id),
+        "pid": str(project_id) if project_id else None,
+        "exp": int(exp.timestamp()),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+
+
+def decode_export_download_token(token: str) -> dict:
+    payload = jwt.decode(
+        token,
+        settings.secret_key,
+        algorithms=[settings.algorithm],
+    )
+    if payload.get("typ") != EXPORT_DOWNLOAD_JWT_TYP:
+        raise JWTError("Invalid token type")
+    return payload
