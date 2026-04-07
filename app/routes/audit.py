@@ -1,4 +1,9 @@
-from fastapi import APIRouter, Depends, status
+from pathlib import Path
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.responses import FileResponse
+from jose import JWTError
 from sqlalchemy.orm import Session
 from typing import List
 from app.services.permissions_service import PermissionsService
@@ -6,9 +11,24 @@ from app.core.errors import audit_error
 
 from app.dependencies.auth import get_current_user
 from app.core.database import get_db
-from app.schemas.audit import ErrorExtProRequest, ListAuditRequest, ListErrorsRequest
+from app.core.config import settings
+from app.core.security import decode_export_download_token
+from app.schemas.audit import (
+    AuditExportJobResponse,
+    CreateAuditExportRequest,
+    ErrorExtProRequest,
+    ListAuditRequest,
+    ListErrorsRequest,
+)
 from app.services.audit_service import AuditService
 from app.repositories.audit_repository import AuditRepository
+from app.services.audit_export_service import (
+    create_audit_export_job,
+    get_job_for_user,
+    job_to_response,
+    list_jobs_for_user,
+)
+from app.services.audit_export_store import job_store
 
 
 router = APIRouter(prefix="/audit", tags=["Auditory"])
@@ -1730,3 +1750,173 @@ def list_error_severity(
         for severity in severities
         if severity.severity
     ]
+
+
+# ==================== EXPORTACIÓN ASÍNCRONA (RF-INT-08) ====================
+
+
+def _require_audit_export_permission(db: Session, current_user: dict) -> None:
+    if not PermissionsService().validate_permission(
+        db,
+        current_user.get("role"),
+        settings.audit_export_permission_code,
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+
+@router.post(
+    "/exports",
+    response_model=AuditExportJobResponse,
+    summary="Solicitar exportación asíncrona de auditoría",
+)
+def create_audit_export(
+    body: CreateAuditExportRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    _require_audit_export_permission(db, current_user)
+    return create_audit_export_job(db, request=request, current_user=current_user, body=body)
+
+
+@router.get(
+    "/exports",
+    response_model=List[AuditExportJobResponse],
+    summary="Listar exportaciones del usuario",
+)
+def list_audit_exports(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=200),
+):
+    _require_audit_export_permission(db, current_user)
+    uid = current_user["user"].user_id
+    jobs = list_jobs_for_user(uid, limit=limit)
+    return [job_to_response(j) for j in jobs]
+
+
+@router.get(
+    "/exports/{export_id}",
+    response_model=AuditExportJobResponse,
+    summary="Estado de una exportación",
+)
+def get_audit_export(
+    export_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    _require_audit_export_permission(db, current_user)
+    uid = current_user["user"].user_id
+    job = get_job_for_user(export_id, uid)
+    if not job:
+        audit_error("EXPORT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
+    inc = job.get("status") == "COMPLETED"
+    return job_to_response(job, include_download=inc)
+
+
+@router.get(
+    "/exports/{export_id}/download",
+    summary="Descargar archivo de exportación (token temporal)",
+)
+def download_audit_export(
+    export_id: UUID,
+    token: str = Query(..., description="JWT de descarga"),
+    db: Session = Depends(get_db),
+):
+    try:
+        payload = decode_export_download_token(token)
+    except JWTError:
+        audit_error("AUTH_INVALID_TOKEN", status.HTTP_401_UNAUTHORIZED)
+    if payload.get("eid") != str(export_id):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+    job = job_store.load(export_id)
+    if not job or job.get("request_by") != payload.get("sub"):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+    if job.get("status") != "COMPLETED":
+        audit_error("EXPORT_NOT_READY", status.HTTP_400_BAD_REQUEST)
+
+    fp = job.get("file_path")
+    if not fp:
+        audit_error("EXPORT_FILE_MISSING", status.HTTP_404_NOT_FOUND)
+    path = Path(fp)
+    if not path.is_file():
+        audit_error("EXPORT_FILE_MISSING", status.HTTP_404_NOT_FOUND)
+
+    repo = AuditRepository()
+    try:
+        ag = repo.get_project_by_code(db, code="AGROFUSION")
+        pid = ag.af_project_id if ag else None
+        repo.log_event_optional_term(
+            db,
+            action_code="EXPORT_DOWNLOADED",
+            outcome="success",
+            module_code="AUDIT_EXPORT",
+            project_id=pid,
+            actor_id=UUID(payload["sub"]),
+            metadata={"export_request_id": str(export_id), "file_hash": job.get("file_hash")},
+        )
+    except Exception:
+        pass
+
+    media = {
+        "CSV": "text/csv; charset=utf-8",
+        "JSONL": "application/x-ndjson; charset=utf-8",
+        "XLSX": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "PDF": "application/pdf",
+    }.get(job.get("format", ""), "application/octet-stream")
+
+    fname = job.get("download_filename") or (
+        f"AgroFusion_Auditoria_{export_id}.{str(path.suffix).lstrip('.')}"
+    )
+    return FileResponse(
+        path=str(path),
+        filename=fname,
+        media_type=media,
+    )
+
+
+@router.delete(
+    "/exports/{export_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Eliminar exportación y archivo asociado",
+)
+def delete_audit_export(
+    export_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    _require_audit_export_permission(db, current_user)
+    uid = current_user["user"].user_id
+    job = get_job_for_user(export_id, uid)
+    if not job:
+        audit_error("EXPORT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
+
+    fp = job.get("file_path")
+    if fp:
+        p = Path(fp)
+        if p.is_file():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+    job_store.delete_job_file(export_id)
+
+    repo = AuditRepository()
+    try:
+        ag = repo.get_project_by_code(db, code="AGROFUSION")
+        pid = ag.af_project_id if ag else None
+        repo.log_event_optional_term(
+            db,
+            action_code="EXPORT_DELETED",
+            outcome="success",
+            module_code="AUDIT_EXPORT",
+            project_id=pid,
+            actor_id=uid,
+            metadata={"export_request_id": str(export_id)},
+        )
+    except Exception:
+        pass
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

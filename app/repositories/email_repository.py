@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import time
+import threading
 from sqlalchemy.orm import Session
 from urllib.parse import urlencode
 from typing import List, Dict
@@ -10,8 +11,8 @@ from app.utils.template_render import render_template
 from app.services.email_service import send_templated_email
 from app.core.config import settings
 import json
-from urllib.parse import urlencode
 from app.models.users import Users
+from app.core.database import SessionLocal
 
 class EmailRepository:
     """
@@ -140,4 +141,90 @@ class EmailRepository:
         email_queue.sent_at= datetime.now(timezone.utc)
         db.commit()
 
+        return email_queue
+
+    def send_export_ready_notification(
+        self,
+        db: Session,
+        *,
+        user,
+        export_name: str,
+        export_format: str,
+        record_count: int,
+        download_url: str | None,
+        download_token: str,
+        file_hash: str,
+        expires_at_iso: str,
+    ):
+        """
+        Notifica que una exportación de auditoría está lista.
+        Usa el template `export_ready` si existe; si no, no hace nada.
+        """
+        try:
+            template = self.get_email_template(db, "export_ready")
+        except RuntimeError:
+            return None
+
+        if not template.body_html_template or not template.body_text_template:
+            return None
+
+        data = {
+            "user_name": user.name,
+            "export_name": export_name,
+            "format": export_format,
+            "record_count": record_count,
+            "download_url": download_url or "(use el endpoint de estado con el token recibido)",
+            "download_token": download_token,
+            "file_hash": file_hash,
+            "expires_at": expires_at_iso,
+        }
+        body_html = render_template(template.body_html_template, data)
+        body_text = render_template(template.body_text_template, data)
+
+        email_queue = AfEmailQueue(
+            recipient_email=user.email,
+            recipient_name=user.name,
+            subject=template.subject_template or "Exportación de auditoría lista",
+            body_html=body_html,
+            body_text=body_text,
+            template_name=template.template_name,
+            template_data=data,
+            status="pending",
+            priority=2,
+            attempts=0,
+            max_attempts=5,
+        )
+        db.add(email_queue)
+        db.commit()
+
+        def _send():
+            sdb = SessionLocal()
+            try:
+                send_templated_email(
+                    to_email=user.email,
+                    subject=email_queue.subject,
+                    body_html=body_html,
+                    body_text=body_text,
+                )
+                q = sdb.query(AfEmailQueue).filter(
+                    AfEmailQueue.email_queue_id == email_queue.email_queue_id
+                ).first()
+                if q:
+                    q.status = "sent"
+                    q.attempts = (q.attempts or 0) + 1
+                    q.sent_at = datetime.now(timezone.utc)
+                sdb.commit()
+            except Exception:
+                q = sdb.query(AfEmailQueue).filter(
+                    AfEmailQueue.email_queue_id == email_queue.email_queue_id
+                ).first()
+                if q:
+                    q.status = "failed"
+                    q.last_error = "send failed"
+                    q.attempts = (q.attempts or 0) + 1
+                sdb.commit()
+            finally:
+                sdb.close()
+
+        threading.Thread(target=_send, daemon=True).start()
         return email_queue

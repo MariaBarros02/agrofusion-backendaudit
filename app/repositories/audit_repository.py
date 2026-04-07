@@ -2,7 +2,7 @@ from app.models.af_external_projects import AfExternalProject
 from typing import List
 from fastapi import status
 from app.core.errors import audit_error
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from app.models.af_error_log import AfErrorLog
 from app.models.cat_terms import CatTerm
 from app.schemas.audit import ErrorExtProRequest
@@ -10,6 +10,7 @@ from app.schemas.audit import ErrorExtProRequest
 from app.models.af_audit_log import AuditLog
 from app.models.users import Users
 from app.models.af_projects import Project
+from app.models.af_user_project_roles import AfUserProjectRole
 
 import uuid
 import hashlib
@@ -18,7 +19,7 @@ import json
 from datetime import datetime, date
 from uuid import UUID
 
-from sqlalchemy import func, cast, String
+from sqlalchemy import func, cast, String, or_, and_
 
 class AuditRepository: 
     """
@@ -432,6 +433,176 @@ class AuditRepository:
         # Se agrega a la sesión (commit externo)
         db.add(log)
         db.commit()
+
+    def log_event_optional_term(
+        self,
+        db: Session,
+        *,
+        action_code: str,
+        outcome: str,
+        module_code: str,
+        project_id,
+        actor_id=None,
+        session_id=None,
+        ip: str | None = None,
+        user_agent: str | None = None,
+        metadata: dict | None = None,
+        diff_json: dict | None = None,
+    ) -> None:
+        """
+        Registra un evento de auditoría sin fallar si el término AUDIT_ACTION no existe en catálogo.
+        Útil para ciclos de vida de exportación (EXPORT_*) cuando no hay migración de datos de catálogo.
+        """
+        target_payload = metadata or {}
+        hash_base = {
+            "target": target_payload,
+            "diff": diff_json,
+        }
+        payload_str = json.dumps(hash_base, sort_keys=True)
+        payload_hash = hashlib.sha256(payload_str.encode()).hexdigest()
+
+        action_term_id = None
+        try:
+            action_term_id = self.get_action_term_audit(db, action_code=action_code)
+        except RuntimeError:
+            pass
+
+        log = AuditLog(
+            actor_id=actor_id,
+            action_code=action_code,
+            action_term_id=action_term_id,
+            outcome=outcome,
+            target_json=target_payload,
+            diff_json=diff_json,
+            actor_ip=ip,
+            session_id=session_id,
+            module_code=module_code,
+            project_id=project_id,
+            payload_hash=payload_hash,
+            device_info={"user_agent": user_agent} if user_agent else None,
+        )
+        db.add(log)
+        db.commit()
+
+    def get_user_visible_project_ids(self, db: Session, user_id: UUID) -> List[UUID]:
+        rows = (
+            db.query(AfUserProjectRole.af_project_id)
+            .filter(AfUserProjectRole.user_id == user_id)
+            .distinct()
+            .all()
+        )
+        return [r[0] for r in rows]
+
+    def _normalize_outcome_filters(self, outcomes: List[str] | None) -> List[str] | None:
+        if not outcomes:
+            return None
+        mapped = []
+        for o in outcomes:
+            lo = (o or "").lower()
+            if lo in ("failed", "error", "failure"):
+                mapped.append("failure")
+            elif lo == "success":
+                mapped.append("success")
+            else:
+                mapped.append(lo)
+        return list(dict.fromkeys(mapped))
+
+    def build_audit_export_query(
+        self,
+        db: Session,
+        *,
+        visible_project_ids: List[UUID],
+        search: str | None = None,
+        date_from=None,
+        date_to=None,
+        user_ids: List[UUID] | None = None,
+        project_ids_filter: List[UUID] | None = None,
+        module_codes: List[str] | None = None,
+        action_codes: List[str] | None = None,
+        outcomes: List[str] | None = None,
+        entity_types: List[str] | None = None,
+    ):
+        """
+        Construye la consulta base para exportación (sin paginación), restringida a proyectos visibles.
+        """
+        action_term = aliased(CatTerm)
+        query = (
+            db.query(
+                AuditLog,
+                Users.email.label("actor_email"),
+                Users.name.label("actor_name"),
+                action_term.label.label("action_label"),
+            )
+            .outerjoin(Users, Users.user_id == AuditLog.actor_id)
+            .outerjoin(action_term, action_term.term_id == AuditLog.action_term_id)
+        )
+
+        if not visible_project_ids:
+            query = query.filter(False)
+            return query
+
+        allowed = set(visible_project_ids)
+        if project_ids_filter:
+            filt = {UUID(str(x)) for x in project_ids_filter}
+            allowed = allowed & filt
+        if not allowed:
+            query = query.filter(False)
+            return query
+
+        query = query.filter(
+            or_(
+                AuditLog.project_id.in_(list(allowed)),
+                AuditLog.project_id.is_(None),
+            )
+        )
+
+        if search:
+            query = query.filter(cast(AuditLog.audit_id, String).ilike(f"%{search}%"))
+
+        if date_from:
+            query = query.filter(AuditLog.created_at >= date_from)
+        if date_to:
+            query = query.filter(AuditLog.created_at <= date_to)
+
+        if user_ids:
+            query = query.filter(AuditLog.actor_id.in_(user_ids))
+
+        if module_codes:
+            query = query.filter(AuditLog.module_code.in_(module_codes))
+
+        if action_codes:
+            query = query.filter(AuditLog.action_code.in_(action_codes))
+
+        norm_out = self._normalize_outcome_filters(outcomes)
+        if norm_out:
+            query = query.filter(func.lower(AuditLog.outcome).in_([o.lower() for o in norm_out]))
+
+        if entity_types:
+            query = query.filter(
+                and_(
+                    AuditLog.target_json.isnot(None),
+                    AuditLog.target_json["entity_type"].astext.in_(entity_types),
+                )
+            )
+
+        return query
+
+    def count_audit_export(self, db: Session, base_query) -> int:
+        return base_query.with_entities(AuditLog.audit_id).distinct().count()
+
+    def fetch_audit_export_batch(
+        self,
+        db: Session,
+        base_query,
+        offset: int,
+        limit: int,
+    ):
+        return (
+            base_query.order_by(AuditLog.created_at.asc(), AuditLog.audit_id.asc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
 
     @staticmethod
     def model_to_dict(obj):

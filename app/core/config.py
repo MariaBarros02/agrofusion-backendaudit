@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     smtp_password: str
     smtp_from_name: str
     sso_private_key_path: str | None = None
+    # Exportación asíncrona de auditoría (metadatos en disco; sin tabla dedicada)
+    exports_base_path: str = "./data/exports"
+    audit_export_permission_code: str = "030"
+    export_download_ttl_minutes: int = 60
+    export_signing_key_id: str | None = None
+    export_worker_poll_seconds: float = 2.0
+    export_chunk_size: int = 10000
+    export_file_retention_days: int = 7
+    export_pdf_max_rows: int = 5000
+    # URL pública del API de auditoría para enlaces de descarga en correo (opcional)
+    audit_api_public_url: str = ""
     # Configuración de Pydantic Settings:
     # - Carga variables desde el archivo .env según el entorno
     # - Rechaza variables no definidas explícitamente

@@ -1,0 +1,42 @@
+{
+  "export_id": "e3eb5fcf-481a-45a0-b756-1a890008ab68",
+  "request_by": "93a79087-413b-420d-906a-fd7ac3576029",
+  "primary_project_id": "a3747ffe-f4c2-4bfc-aafb-ea97f5aeb68e",
+  "format": "CSV",
+  "filters": {
+    "date_from": null,
+    "date_to": null,
+    "user_ids": [],
+    "project_ids": [],
+    "module_codes": [
+      "MODULES"
+    ],
+    "action_codes": [],
+    "outcomes": [],
+    "entity_types": [],
+    "search": null,
+    "fields": null,
+    "mask_pii": true,
+    "include_sensitive": false
+  },
+  "priority": "normal",
+  "status": "COMPLETED",
+  "requested_at": "2026-04-06T06:00:22.209258+00:00",
+  "export_name": "Informe auditor\u00eda 2026-04-06",
+  "file_path": "C:\\Users\\COMPUMAX\\Desktop\\Integrador4\\agrofusion-backendaudit\\data\\exports\\files\\a3747ffe-f4c2-4bfc-aafb-ea97f5aeb68e\\2026\\04\\e3eb5fcf-481a-45a0-b756-1a890008ab68.csv",
+  "file_size_bytes": 3220,
+  "file_hash": "12abd3593a8f659b9a175afb8f7d7b224ce6a5809a6f4bfe26bba35920fdeadd",
+  "digital_signature": "5W5Dor9BI0DHF8T1viIs1Ma3+0Lno23l8zvwXObahzk=",
+  "kms_signature_id": "4994b55b-36db-42a0-9680-4b58c9dc378f",
+  "actual_records": 5,
+  "started_at": "2026-04-06T06:00:22.656575+00:00",
+  "completed_at": "2026-04-06T06:00:24.989281+00:00",
+  "failed_at": null,
+  "error_message": null,
+  "retry_count": 0,
+  "next_retry_at": null,
+  "download_filename": "AgroFusion_Auditoria_20260406_060024_5reg.csv",
+  "mask_pii": true,
+  "include_sensitive": false,
+  "fields": null
+}
