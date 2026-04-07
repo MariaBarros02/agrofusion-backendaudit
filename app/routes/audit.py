@@ -28,7 +28,10 @@ from app.services.audit_export_service import (
     job_to_response,
     list_jobs_for_user,
 )
-from app.services.audit_export_store import job_store
+from app.repositories.audit_export_repository import (
+    AuditExportRepository,
+    audit_export_to_job_dict,
+)
 
 
 router = APIRouter(prefix="/audit", tags=["Auditory"])
@@ -1791,7 +1794,7 @@ def list_audit_exports(
 ):
     _require_audit_export_permission(db, current_user)
     uid = current_user["user"].user_id
-    jobs = list_jobs_for_user(uid, limit=limit)
+    jobs = list_jobs_for_user(db, uid, limit=limit)
     return [job_to_response(j) for j in jobs]
 
 
@@ -1807,7 +1810,7 @@ def get_audit_export(
 ):
     _require_audit_export_permission(db, current_user)
     uid = current_user["user"].user_id
-    job = get_job_for_user(export_id, uid)
+    job = get_job_for_user(db, export_id, uid)
     if not job:
         audit_error("EXPORT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
     inc = job.get("status") == "COMPLETED"
@@ -1830,9 +1833,11 @@ def download_audit_export(
     if payload.get("eid") != str(export_id):
         audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
 
-    job = job_store.load(export_id)
-    if not job or job.get("request_by") != payload.get("sub"):
+    er = AuditExportRepository()
+    row = er.get_by_id(db, export_id)
+    if not row or str(row.requested_by) != payload.get("sub"):
         audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+    job = audit_export_to_job_dict(row)
     if job.get("status") != "COMPLETED":
         audit_error("EXPORT_NOT_READY", status.HTTP_400_BAD_REQUEST)
 
@@ -1858,6 +1863,8 @@ def download_audit_export(
         )
     except Exception:
         pass
+
+    er.increment_download(db, export_id)
 
     media = {
         "CSV": "text/csv; charset=utf-8",
@@ -1888,7 +1895,7 @@ def delete_audit_export(
 ):
     _require_audit_export_permission(db, current_user)
     uid = current_user["user"].user_id
-    job = get_job_for_user(export_id, uid)
+    job = get_job_for_user(db, export_id, uid)
     if not job:
         audit_error("EXPORT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
 
@@ -1901,7 +1908,7 @@ def delete_audit_export(
             except OSError:
                 pass
 
-    job_store.delete_job_file(export_id)
+    AuditExportRepository().delete(db, export_id)
 
     repo = AuditRepository()
     try:

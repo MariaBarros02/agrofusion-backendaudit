@@ -1,7 +1,8 @@
 """
-Almacenamiento de metadatos de exportaciones en disco (sin tabla af_audit_exports).
+Rutas de disco para archivos de exportación de auditoría.
 
-Los archivos generados viven bajo exports_base_path/files/...
+Los metadatos del job viven en `af_audit_exports`; los binarios bajo
+exports_base_path/files/...
 """
 
 from __future__ import annotations

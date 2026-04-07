@@ -32,7 +32,8 @@ class Settings(BaseSettings):
     smtp_password: str
     smtp_from_name: str
     sso_private_key_path: str | None = None
-    # Exportación asíncrona de auditoría (metadatos en disco; sin tabla dedicada)
+    # Archivos generados de exportación (PDF/CSV/…); metadatos en af_audit_exports.
+    # Por defecto bajo el proyecto; en producción suele apuntarse a un volumen (exports_base_path en .env).
     exports_base_path: str = "./data/exports"
     audit_export_permission_code: str = "030"
     export_download_ttl_minutes: int = 60

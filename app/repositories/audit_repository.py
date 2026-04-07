@@ -66,7 +66,25 @@ class AuditRepository:
         ).all()
         )   
         return external_projects
-    
+
+    def resolve_audit_export_tenant_id(self, db: Session) -> UUID:
+        """
+        af_audit_exports.tenant_id referencia af_external_projects.external_project_id
+        (FK af_audit_exports_tenant_fkey), no af_projects.
+        """
+        ep = self.get_EP_by_code(db, "AGROFUSION")
+        if ep and ep.is_active:
+            return ep.external_project_id
+        row = (
+            db.query(AfExternalProject)
+            .filter(AfExternalProject.is_active.is_(True))
+            .order_by(AfExternalProject.instance_code.asc())
+            .first()
+        )
+        if not row:
+            audit_error("INTERNAL_SERVER_ERROR", status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return row.external_project_id
+
 
     def register_errors_EP(self, db: Session, errors: List[ErrorExtProRequest]) -> None:
         """

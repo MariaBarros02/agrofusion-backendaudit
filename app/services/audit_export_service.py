@@ -10,13 +10,17 @@ import uuid
 from uuid import UUID
 
 from fastapi import Request, status
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.errors import audit_error
 from app.core.security import create_export_download_token
 from app.repositories.audit_repository import AuditRepository
+from app.repositories.audit_export_repository import (
+    AuditExportRepository,
+    audit_export_to_job_dict,
+)
 from app.schemas.audit import AuditExportJobResponse, CreateAuditExportRequest
-from app.services.audit_export_store import job_store
 from app.services.permissions_service import PermissionsService
 
 
@@ -40,8 +44,6 @@ def _filters_payload(req: CreateAuditExportRequest) -> Dict[str, Any]:
         "entity_types": req.entity_types or [],
         "search": req.search,
         "fields": req.fields,
-        "mask_pii": req.mask_pii,
-        "include_sensitive": req.include_sensitive,
     }
 
 
@@ -61,7 +63,7 @@ def _filters_summary(filters: Dict[str, Any]) -> str:
 
 
 def create_audit_export_job(
-    db,
+    db: Session,
     *,
     request: Request,
     current_user: dict,
@@ -85,36 +87,27 @@ def create_audit_export_job(
     primary_project = visible[0] if visible else ag.af_project_id
 
     export_id = uuid.uuid4()
-    filters = _filters_payload(body)
-    job: Dict[str, Any] = {
-        "export_id": str(export_id),
-        "request_by": str(user_id),
-        "primary_project_id": str(primary_project),
-        "format": body.format.value,
-        "filters": filters,
-        "priority": body.priority.value,
-        "status": "PENDING",
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "export_name": body.export_name,
-        "file_path": None,
-        "file_size_bytes": None,
-        "file_hash": None,
-        "digital_signature": None,
-        "kms_signature_id": None,
-        "actual_records": None,
-        "started_at": None,
-        "completed_at": None,
-        "failed_at": None,
-        "error_message": None,
-        "retry_count": 0,
-        "next_retry_at": None,
-        "download_filename": None,
-        "mask_pii": body.mask_pii,
-        "include_sensitive": body.include_sensitive,
-        "fields": body.fields if body.fields else None,
-    }
+    filters_json = _filters_payload(body)
+    filters_json["_primary_project_id"] = str(primary_project)
+    filters_json["_mask_pii"] = body.mask_pii
+    filters_json["_include_sensitive"] = body.include_sensitive
+    filters_json["_retry_count"] = 0
 
-    job_store.save_atomic(job)
+    # tenant_id -> af_external_projects.external_project_id (no af_projects)
+    tenant_id = repo.resolve_audit_export_tenant_id(db)
+
+    er = AuditExportRepository()
+    er.create(
+        db,
+        export_id=export_id,
+        tenant_id=tenant_id,
+        requested_by=user_id,
+        export_format=body.format.value,
+        filters_json=filters_json,
+        selected_fields=body.fields if body.fields else None,
+        priority=body.priority.value,
+        export_name=body.export_name,
+    )
 
     session = current_user.get("session")
     ip = None
@@ -137,12 +130,14 @@ def create_audit_export_job(
         user_agent=request.headers.get("user-agent"),
         metadata={
             "format": body.format.value,
-            "filters_summary": _filters_summary(filters),
+            "filters_summary": _filters_summary(filters_json),
             "priority": body.priority.value,
             "export_id": str(export_id),
         },
     )
 
+    row = er.get_by_id(db, export_id)
+    job = audit_export_to_job_dict(row) if row else {}
     return job_to_response(job, include_download=False)
 
 
@@ -199,12 +194,19 @@ def job_to_response(
     )
 
 
-def get_job_for_user(export_id: UUID, user_id: UUID) -> Optional[Dict[str, Any]]:
-    job = job_store.load(export_id)
-    if not job or job.get("request_by") != str(user_id):
+def get_job_for_user(
+    db: Session, export_id: UUID, user_id: UUID
+) -> Optional[Dict[str, Any]]:
+    er = AuditExportRepository()
+    row = er.get_for_user(db, export_id, user_id)
+    if not row:
         return None
-    return job
+    return audit_export_to_job_dict(row)
 
 
-def list_jobs_for_user(user_id: UUID, limit: int = 50) -> List[Dict[str, Any]]:
-    return job_store.list_for_user(user_id, limit=limit)
+def list_jobs_for_user(
+    db: Session, user_id: UUID, limit: int = 50
+) -> List[Dict[str, Any]]:
+    er = AuditExportRepository()
+    rows = er.list_for_user(db, user_id, limit=limit)
+    return [audit_export_to_job_dict(r) for r in rows]

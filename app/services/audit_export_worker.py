@@ -4,7 +4,6 @@ Worker en hilo para procesar exportaciones de auditoría sin bloquear la API.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
@@ -19,6 +18,11 @@ from app.core.database import SessionLocal
 from app.core.security import create_export_download_token
 from app.models.users import Users
 from app.repositories.audit_repository import AuditRepository
+from app.repositories.audit_export_repository import (
+    AuditExportRepository,
+    audit_export_to_job_dict,
+    query_filters_for_worker,
+)
 from app.repositories.kms_repository import KmsRepository
 from app.repositories.email_repository import EmailRepository
 from app.models.af_kms_keys import KeyPurpose
@@ -73,9 +77,10 @@ def _run_export_body(job: dict) -> None:
     db = SessionLocal()
     started = datetime.now(timezone.utc)
     ar = AuditRepository()
+    er = AuditExportRepository()
     request_by = UUID(job["request_by"])
     primary = UUID(job["primary_project_id"])
-    f = job["filters"]
+    f = query_filters_for_worker(job.get("filters") or {})
 
     try:
         visible = ar.get_user_visible_project_ids(db, request_by)
@@ -201,22 +206,19 @@ def _run_export_body(job: dict) -> None:
             f"AgroFusion_Auditoria_{finished.strftime('%Y%m%d_%H%M%S')}_"
             f"{total_written}reg.{ext}"
         )
-        job.update(
-            {
-                "status": "COMPLETED",
-                "completed_at": finished.isoformat(),
-                "file_path": str(out_path),
-                "file_size_bytes": len(file_bytes),
-                "file_hash": file_hash,
-                "digital_signature": sig_b64,
-                "kms_signature_id": kms_sig_id,
-                "actual_records": total_written,
-                "error_message": None,
-                "failed_at": None,
-                "download_filename": download_filename,
-            }
+        elapsed_ms = int((finished - started).total_seconds() * 1000)
+        er.save_completed(
+            db,
+            export_id,
+            file_path=str(out_path),
+            file_size_bytes=len(file_bytes),
+            file_hash=file_hash,
+            digital_signature=sig_b64,
+            kms_signature_id=kms_sig_id,
+            record_count=total_written,
+            download_filename=download_filename,
+            processing_time_ms=elapsed_ms,
         )
-        job_store.save_atomic(job)
 
         elapsed = (finished - started).total_seconds()
         ar.log_event_optional_term(
@@ -270,11 +272,17 @@ def _run_export_body(job: dict) -> None:
     except Exception as exc:
         logger.exception("Export %s failed", export_id)
         primary_pid = UUID(job["primary_project_id"])
-        fresh = job_store.load(export_id) or job
-        retries = int(fresh.get("retry_count") or 0) + 1
-        fresh["retry_count"] = retries
-        fresh["failed_at"] = datetime.now(timezone.utc).isoformat()
-        fresh["error_message"] = str(exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        row = er.get_by_id(db, export_id)
+        if row and row.filters_json is not None:
+            retries = int(row.filters_json.get("_retry_count", 0) or 0) + 1
+        else:
+            retries = int(job.get("retry_count") or 0) + 1
+        requeue = retries < 3
+        backoff = 2**retries if requeue else 0
 
         try:
             ar.log_event_optional_term(
@@ -293,49 +301,44 @@ def _run_export_body(job: dict) -> None:
         except Exception:
             logger.exception("Could not log EXPORT_FAILED")
 
-        if retries < 3:
-            backoff = 2**retries
-            fresh["status"] = "PENDING"
-            fresh["next_retry_at"] = (
-                datetime.now(timezone.utc) + timedelta(seconds=backoff)
-            ).isoformat()
-            fresh["started_at"] = None
-        else:
-            fresh["status"] = "FAILED"
-        job_store.save_atomic(fresh)
+        er.save_failed_retry(
+            db,
+            export_id,
+            error_message=str(exc),
+            retry_count=retries,
+            requeue_pending=requeue,
+            backoff_seconds=backoff,
+        )
     finally:
         db.close()
 
 
-def _process_one_job(job_path) -> None:
-    path = Path(job_path)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-
-    if data.get("status") != "PENDING":
-        return
-
-    nr = data.get("next_retry_at")
-    if nr:
-        try:
-            when = _parse_iso_dt(nr)
-            if when and datetime.now(timezone.utc) < when.replace(tzinfo=timezone.utc):
-                return
-        except (TypeError, ValueError):
-            pass
-
-    export_id = UUID(data["export_id"])
-    cur: dict | None = None
+def _process_one_export_id(export_id: UUID) -> None:
+    er = AuditExportRepository()
     with _process_lock:
-        cur = job_store.load(export_id)
-        if not cur or cur.get("status") != "PENDING":
-            return
-        cur["status"] = "PROCESSING"
-        cur["started_at"] = datetime.now(timezone.utc).isoformat()
-        cur["next_retry_at"] = None
-        job_store.save_atomic(cur)
+        db = SessionLocal()
+        try:
+            row = er.get_by_id(db, export_id)
+            if not row or row.status != "PENDING":
+                return
+            fj = dict(row.filters_json or {})
+            nr = fj.get("_next_retry_at")
+            if nr:
+                try:
+                    when = _parse_iso_dt(nr)
+                    if when and datetime.now(timezone.utc) < when.replace(tzinfo=timezone.utc):
+                        return
+                except (TypeError, ValueError):
+                    pass
+            er.save_processing(
+                db,
+                export_id,
+                started_at=datetime.now(timezone.utc),
+            )
+            row = er.get_by_id(db, export_id)
+            cur = audit_export_to_job_dict(row) if row else None
+        finally:
+            db.close()
 
     if not cur:
         return
@@ -361,13 +364,18 @@ def _process_one_job(job_path) -> None:
 
 def _loop() -> None:
     poll = max(0.5, settings.export_worker_poll_seconds)
+    er = AuditExportRepository()
     while not _stop.is_set():
         try:
-            paths = sorted(job_store.jobs_dir.glob("*.json"))
-            for p in paths:
+            db = SessionLocal()
+            try:
+                rows = er.list_pending_candidates(db, limit=100)
+            finally:
+                db.close()
+            for row in rows:
                 if _stop.is_set():
                     break
-                _process_one_job(p)
+                _process_one_export_id(row.export_id)
         except Exception:
             logger.exception("Export worker loop error")
         _stop.wait(poll)
