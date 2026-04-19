@@ -13,6 +13,7 @@ from app.models.af_kms_keys import KeyPurpose, KeyStatus, KeyAlgorithm
 from app.models.af_kms_signatures import SignatureFormat, HashAlgorithm
 from app.models.af_kms_signature_validations import ValidationResult
 from app.models.af_kms_key_rotations import RotationReason
+from app.models.af_kms_ca_root import CaRootStatus
 
 
 # ==================== Schemas para Generación de Claves ====================
@@ -261,4 +262,69 @@ class SignatureListResponse(BaseModel):
     
     signatures: List[SignatureResponse]
     total: int
+
+
+# ==================== Schemas Root CA (RF-INT-11) ====================
+
+class CaRootInitRequest(BaseModel):
+    """Request para inicializar la Root CA interna del sistema."""
+
+    algorithm: Optional[str] = Field(
+        None,
+        description="Algoritmo: RSA-2048, RSA-4096, ECDSA-P256 o ECDSA-P384. Si se omite se usa el valor por defecto configurado.",
+    )
+    subject: Optional[str] = Field(
+        None,
+        description="Subject DN de la Root CA. Ej: CN=AgroFusion Root CA. Si se omite se usa el valor configurado.",
+    )
+    validity_days: Optional[int] = Field(
+        None,
+        ge=3650,
+        le=36525,
+        description="Vigencia del certificado en días (mínimo 3650 = 10 años).",
+    )
+
+    @validator("algorithm")
+    def _validate_algorithm(cls, v):
+        if v is None:
+            return v
+        try:
+            return KeyAlgorithm(v).value
+        except ValueError:
+            raise ValueError(
+                "Algoritmo inválido. Opciones: RSA-2048, RSA-4096, ECDSA-P256, ECDSA-P384"
+            )
+
+
+class CaRootResponse(BaseModel):
+    """Metadatos públicos de la Root CA (nunca incluye la clave privada)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    ca_id: UUID
+    subject: str
+    issuer: str
+    serial_number: str
+    fingerprint: str
+    public_key: str
+    certificate_pem: str
+    valid_from: datetime
+    valid_to: datetime
+    status: CaRootStatus
+    created_at: datetime
+    rotated_at: Optional[datetime] = None
+    created_by: Optional[UUID] = None
+
+
+class CaRootCertificateResponse(BaseModel):
+    """Respuesta para exportación del certificado público de la Root CA."""
+
+    subject: str
+    issuer: str
+    serial_number: str
+    fingerprint: str
+    valid_from: datetime
+    valid_to: datetime
+    certificate_pem: str
+    public_key: str
 

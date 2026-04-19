@@ -437,6 +437,105 @@
 				}
 			],
 			"description": "Endpoints para gestión de certificados X.509"
+		},
+		{
+			"name": "Root CA (RF-INT-11)",
+			"item": [
+				{
+					"name": "1. Inicializar Root CA",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Capturar ca_id automáticamente de la respuesta",
+									"if (pm.response.code === 201) {",
+									"    const response = pm.response.json();",
+									"    if (response.ca_id) {",
+									"        pm.collectionVariables.set('ca_id', response.ca_id);",
+									"        console.log('✓ ca_id guardado:', response.ca_id);",
+									"        console.log('✓ subject:', response.subject);",
+									"        console.log('✓ serial_number:', response.serial_number);",
+									"        console.log('✓ fingerprint:', response.fingerprint);",
+									"    }",
+									"} else if (pm.response.code === 409) {",
+									"    console.warn('⚠️  Ya existe una Root CA activa. Consulta GET /kms/ca-root para ver la existente.');",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"algorithm\": \"RSA-2048\",\n  \"subject\": \"CN=AgroFusion Root CA,O=AgroFusion,C=CO\",\n  \"validity_days\": 3650\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/ca-root",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "ca-root"]
+						},
+						"description": "Inicializa la Autoridad Certificadora Raíz del sistema (RF-INT-11).\n\nSolo se puede ejecutar una vez: si ya existe una Root CA activa responde 409 CA_ROOT_ALREADY_EXISTS.\n\nOpciones válidas:\n- algorithm: RSA-2048 | RSA-4096 | ECDSA-P256 | ECDSA-P384\n- validity_days: ≥ 3650 (10 años)\n- subject: Distinguished Name de la CA\n\nSi omites cualquier campo se usan los valores configurados en .env."
+					},
+					"response": []
+				},
+				{
+					"name": "2. Obtener Root CA activa",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/ca-root",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "ca-root"]
+						},
+						"description": "Devuelve los metadatos de la Root CA activa (sin clave privada). Incluye ca_id, subject, issuer, serial_number, fingerprint, certificate_pem, public_key, valid_from, valid_to y status.\n\nResponde 404 CA_ROOT_NOT_FOUND si aún no se ha inicializado."
+					},
+					"response": []
+				},
+				{
+					"name": "3. Exportar Certificado público de la Root CA",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/ca-root/certificate",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "ca-root", "certificate"]
+						},
+						"description": "Exporta el certificado X.509 público de la Root CA activa en formato PEM. Útil para validaciones externas de firmas emitidas por el sistema.\n\nNo requiere permisos administrativos: cualquier usuario autenticado puede consumirlo."
+					},
+					"response": []
+				}
+			],
+			"description": "Endpoints de la Autoridad Certificadora Raíz interna del sistema (RF-INT-11).\n\nLa Root CA se genera automáticamente en el arranque del backend si no existe una activa (auto-seed). También puede inicializarse manualmente con POST /kms/ca-root.\n\nReglas:\n- Solo puede existir una Root CA con status = 'active'.\n- Vigencia mínima 10 años (3650 días).\n- Clave privada cifrada con AES-256-GCM + IV aleatorio por registro usando KMS_MASTER_KEY.\n- Fingerprint SHA-256 sobre el certificado en formato DER.\n- MD5 y SHA-1 prohibidos en todo el proceso."
 		}
 	],
 	"variable": [
@@ -491,6 +590,12 @@
 			"key": "document_content",
 			"value": "Documento de prueba",
 			"type": "string"
+		},
+		{
+			"key": "ca_id",
+			"value": "",
+			"type": "string",
+			"description": "UUID de la Root CA activa. Se captura automáticamente al ejecutar POST /kms/ca-root."
 		}
 	]
 }

@@ -16,6 +16,7 @@ import traceback
 
 from app.core.database import get_db
 from app.services.kms_service import KmsService
+from app.services.kms_ca_service import KmsCaService
 from app.schemas.kms import (
     KeyCreateRequest,
     KeyResponse,
@@ -30,6 +31,9 @@ from app.schemas.kms import (
     KeyRotationResponse,
     KeyListResponse,
     SignatureListResponse,
+    CaRootInitRequest,
+    CaRootResponse,
+    CaRootCertificateResponse,
 )
 from app.core.errors import audit_error
 from app.dependencies.auth import get_current_user_id, get_current_user
@@ -1388,4 +1392,235 @@ def get_key_rotations(
         metadata={"key_id": str(key_id), "total": len(rotations)},
     )
     return rotations
+
+
+# ==================== Endpoints de Root CA (RF-INT-11) ====================
+
+@router.post(
+    "/ca-root",
+    response_model=CaRootResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Inicializar la Root CA interna del sistema",
+    description=(
+        "Crea la Autoridad Certificadora Raíz autofirmada del sistema (RF-INT-11). "
+        "Solo puede existir una Root CA activa al mismo tiempo. "
+        "La clave privada se cifra con AES-256-GCM usando KMS_MASTER_KEY y nunca "
+        "es retornada por el API."
+    ),
+    responses={
+        **_auth_responses("026"),
+        201: {
+            "description": "Root CA creada correctamente",
+        },
+        400: {
+            "description": "Parámetros inválidos para la Root CA",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_algorithm": {
+                            "summary": "INVALID_CA_ALGORITHM",
+                            "value": {
+                                "detail": {
+                                    "code": "INVALID_CA_ALGORITHM",
+                                    "meta": {"algorithm": "MD5"},
+                                }
+                            },
+                        },
+                        "validity_too_short": {
+                            "summary": "CA_ROOT_VALIDITY_TOO_SHORT",
+                            "value": {
+                                "detail": {
+                                    "code": "CA_ROOT_VALIDITY_TOO_SHORT",
+                                    "meta": {"validity_days": 365, "minimum_required": 3650},
+                                }
+                            },
+                        },
+                    }
+                }
+            },
+        },
+        409: {
+            "description": "Ya existe una Root CA activa",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "already_exists": {
+                            "summary": "CA_ROOT_ALREADY_EXISTS",
+                            "value": {
+                                "detail": {
+                                    "code": "CA_ROOT_ALREADY_EXISTS",
+                                    "meta": {"ca_id": "123e4567-e89b-12d3-a456-426614174000"},
+                                }
+                            },
+                        }
+                    }
+                }
+            },
+        },
+        500: {
+            "description": "Error inesperado al generar la Root CA",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "creation_failed": {
+                            "summary": "CA_ROOT_CREATION_FAILED",
+                            "value": {
+                                "detail": {
+                                    "code": "CA_ROOT_CREATION_FAILED",
+                                    "meta": {"error": "..."},
+                                }
+                            },
+                        }
+                    }
+                }
+            },
+        },
+    },
+)
+def init_ca_root(
+    infoRequest: Request,
+    request: CaRootInitRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    current_user_id: Optional[UUID] = Depends(get_current_user_id),
+):
+    """
+    Inicializa la Root CA interna.
+
+    Requiere permiso de administrador KMS (código 026, mismo que para crear
+    una clave criptográfica). Registra el evento ``KMS_CA_CREATED`` en
+    auditoría.
+    """
+    perm_service = PermissionsService()
+    if not perm_service.validate_permission(
+        db,
+        current_user.get("role"),
+        "026",
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+    service = KmsCaService()
+    try:
+        ca = service.initialize_root_ca(
+            db=db,
+            algorithm=request.algorithm,
+            subject=request.subject,
+            validity_days=request.validity_days,
+            created_by=current_user_id,
+        )
+
+        _log_kms_event(
+            db=db,
+            request=infoRequest,
+            actor_id=current_user_id,
+            action_code="KMS_CA_CREATED",
+            metadata={
+                "ca_id": str(ca.ca_id),
+                "subject": ca.subject,
+                "serial_number": ca.serial_number,
+                "fingerprint": ca.fingerprint,
+                "valid_to": ca.valid_to.isoformat() if ca.valid_to else None,
+            },
+        )
+        return ca
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error initializing Root CA: {str(e)}")
+        print(traceback.format_exc())
+        raise audit_error(
+            "CA_ROOT_CREATION_FAILED",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            {"error": str(e)},
+        )
+
+
+@router.get(
+    "/ca-root",
+    response_model=CaRootResponse,
+    summary="Obtener la Root CA activa",
+    description="Retorna los metadatos de la Root CA activa del sistema (sin clave privada).",
+    responses={
+        **_auth_responses("027"),
+        404: {
+            "description": "No existe Root CA activa",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "not_found": {
+                            "summary": "CA_ROOT_NOT_FOUND",
+                            "value": {"detail": {"code": "CA_ROOT_NOT_FOUND", "meta": {}}},
+                        }
+                    }
+                }
+            },
+        },
+    },
+)
+def get_ca_root(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Devuelve los metadatos públicos de la Root CA activa."""
+    perm_service = PermissionsService()
+    if not perm_service.validate_permission(
+        db,
+        current_user.get("role"),
+        "027",
+    ):
+        audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
+
+    service = KmsCaService()
+    ca = service.get_active_ca(db)
+    if ca is None:
+        raise audit_error("CA_ROOT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
+    return ca
+
+
+@router.get(
+    "/ca-root/certificate",
+    response_model=CaRootCertificateResponse,
+    summary="Exportar el certificado público de la Root CA",
+    description=(
+        "Retorna el certificado X.509 v3 público de la Root CA activa en formato PEM, "
+        "junto con su clave pública y metadatos esenciales. No requiere permisos de "
+        "administración: cualquier cliente autenticado puede consumirlo para validar "
+        "firmas emitidas por el sistema."
+    ),
+    responses={
+        **_token_validation_responses(),
+        404: {
+            "description": "No existe Root CA activa",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "not_found": {
+                            "summary": "CA_ROOT_NOT_FOUND",
+                            "value": {"detail": {"code": "CA_ROOT_NOT_FOUND", "meta": {}}},
+                        }
+                    }
+                }
+            },
+        },
+    },
+)
+def export_ca_root_certificate(
+    db: Session = Depends(get_db),
+    _current_user=Depends(get_current_user),
+):
+    """Exporta el certificado público de la Root CA activa."""
+    service = KmsCaService()
+    ca = service.get_active_ca(db)
+    if ca is None:
+        raise audit_error("CA_ROOT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
+    return CaRootCertificateResponse(
+        subject=ca.subject,
+        issuer=ca.issuer,
+        serial_number=ca.serial_number,
+        fingerprint=ca.fingerprint,
+        valid_from=ca.valid_from,
+        valid_to=ca.valid_to,
+        certificate_pem=ca.certificate_pem,
+        public_key=ca.public_key,
+    )
 

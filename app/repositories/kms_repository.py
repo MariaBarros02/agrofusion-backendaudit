@@ -16,6 +16,7 @@ from app.models.af_kms_certificates import AfKmsCertificate
 from app.models.af_kms_signatures import AfKmsSignature
 from app.models.af_kms_signature_validations import AfKmsSignatureValidation
 from app.models.af_kms_key_rotations import AfKmsKeyRotation, RotationReason
+from app.models.af_kms_ca_root import AfKmsCaRoot, CaRootStatus
 
 
 class KmsRepository:
@@ -341,4 +342,92 @@ class KmsRepository:
             .order_by(AfKmsKeyRotation.rotated_at.desc())
             .all()
         )
+
+    # ==================== Operaciones con Root CA ====================
+
+    def get_active_ca_root(self, db: Session) -> Optional[AfKmsCaRoot]:
+        """Retorna la Root CA activa (si existe)."""
+        return (
+            db.query(AfKmsCaRoot)
+            .filter(AfKmsCaRoot.status == CaRootStatus.ACTIVE.value)
+            .order_by(AfKmsCaRoot.created_at.desc())
+            .first()
+        )
+
+    def get_ca_root_by_id(self, db: Session, ca_id: UUID) -> Optional[AfKmsCaRoot]:
+        """Obtiene una Root CA por su identificador."""
+        return (
+            db.query(AfKmsCaRoot)
+            .filter(AfKmsCaRoot.ca_id == ca_id)
+            .first()
+        )
+
+    def list_ca_roots(self, db: Session) -> List[AfKmsCaRoot]:
+        """Lista el histórico de Root CAs ordenado por fecha de creación."""
+        return (
+            db.query(AfKmsCaRoot)
+            .order_by(AfKmsCaRoot.created_at.desc())
+            .all()
+        )
+
+    def create_ca_root(
+        self,
+        db: Session,
+        *,
+        private_key_encrypted: str,
+        public_key: str,
+        certificate_pem: str,
+        fingerprint: str,
+        serial_number: str,
+        subject: str,
+        issuer: str,
+        valid_from: datetime,
+        valid_to: datetime,
+        created_by: Optional[UUID] = None,
+    ) -> AfKmsCaRoot:
+        """
+        Persiste una nueva Root CA con estado ACTIVE.
+
+        El caller es responsable de garantizar que no exista otra Root CA activa
+        (ver ``get_active_ca_root``); si existiera, debe ser rotada o revocada
+        antes.
+        """
+        ca = AfKmsCaRoot(
+            private_key_encrypted=private_key_encrypted,
+            public_key=public_key,
+            certificate_pem=certificate_pem,
+            fingerprint=fingerprint,
+            serial_number=serial_number,
+            subject=subject,
+            issuer=issuer,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            status=CaRootStatus.ACTIVE.value,
+            created_by=created_by,
+        )
+        db.add(ca)
+        db.commit()
+        db.refresh(ca)
+        return ca
+
+    def update_ca_root_status(
+        self,
+        db: Session,
+        ca_id: UUID,
+        status_value: CaRootStatus,
+        rotated_at: Optional[datetime] = None,
+    ) -> Optional[AfKmsCaRoot]:
+        """Actualiza el estado (active/rotated/revoked) de una Root CA."""
+        ca = self.get_ca_root_by_id(db, ca_id)
+        if ca:
+            ca.status = (
+                status_value.value
+                if isinstance(status_value, CaRootStatus)
+                else str(status_value)
+            )
+            if rotated_at is not None:
+                ca.rotated_at = rotated_at
+            db.commit()
+            db.refresh(ca)
+        return ca
 
