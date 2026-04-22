@@ -12,7 +12,7 @@ from uuid import UUID
 from datetime import datetime
 
 from app.models.af_kms_keys import AfKmsKey, KeyStatus, KeyAlgorithm, KeyPurpose
-from app.models.af_kms_certificates import AfKmsCertificate
+from app.models.af_kms_certificates import AfKmsCertificate, CertificateStatus
 from app.models.af_kms_signatures import AfKmsSignature
 from app.models.af_kms_signature_validations import AfKmsSignatureValidation
 from app.models.af_kms_key_rotations import AfKmsKeyRotation, RotationReason
@@ -41,6 +41,8 @@ class KmsRepository:
         valid_to: datetime,
         created_by: UUID,
         key_version: int = 1,
+        private_key_encrypted: Optional[str] = None,
+        supersedes_key_id: Optional[UUID] = None,
     ) -> AfKmsKey:
         """Crea un nuevo registro de clave criptográfica."""
         key = AfKmsKey(
@@ -50,17 +52,42 @@ class KmsRepository:
             key_length=key_length,
             key_purpose=key_purpose,
             public_key=public_key,
+            private_key_encrypted=private_key_encrypted,
             key_fingerprint=key_fingerprint,
             kms_key_reference=kms_key_reference,
             status=KeyStatus.ACTIVE,
             key_version=key_version,
             valid_to=valid_to,
             created_by=created_by,
+            supersedes_key_id=supersedes_key_id,
         )
         db.add(key)
         db.commit()
         db.refresh(key)
         return key
+
+    def get_active_key_by_project_and_purpose(
+        self, db: Session, project_id: UUID, key_purpose: KeyPurpose
+    ) -> Optional[AfKmsKey]:
+        """
+        Retorna la clave en estado ACTIVE para la combinación
+        ``(project_id, key_purpose)`` si existe.
+
+        Se usa para garantizar la restricción de unicidad exigida por
+        RF-INT-12: solo puede existir una clave activa por proyecto y
+        propósito.
+        """
+        return (
+            db.query(AfKmsKey)
+            .filter(
+                and_(
+                    AfKmsKey.project_id == project_id,
+                    AfKmsKey.key_purpose == key_purpose,
+                    AfKmsKey.status == KeyStatus.ACTIVE,
+                )
+            )
+            .first()
+        )
 
     def get_key_by_id(self, db: Session, key_id: UUID) -> Optional[AfKmsKey]:
         """Obtiene una clave por su ID."""
@@ -151,6 +178,8 @@ class KmsRepository:
         valid_from: datetime,
         valid_to: datetime,
         fingerprint: str,
+        signature_algorithm: Optional[str] = None,
+        status_value: str = CertificateStatus.ACTIVE.value,
     ) -> AfKmsCertificate:
         """Crea un nuevo registro de certificado."""
         certificate = AfKmsCertificate(
@@ -162,6 +191,8 @@ class KmsRepository:
             valid_from=valid_from,
             valid_to=valid_to,
             fingerprint=fingerprint,
+            signature_algorithm=signature_algorithm,
+            status=status_value,
         )
         db.add(certificate)
         db.commit()
@@ -171,10 +202,26 @@ class KmsRepository:
     def get_certificate_by_key_id(
         self, db: Session, key_id: UUID
     ) -> Optional[AfKmsCertificate]:
-        """Obtiene el certificado asociado a una clave."""
+        """Obtiene el certificado más reciente asociado a una clave."""
         return (
             db.query(AfKmsCertificate)
             .filter(AfKmsCertificate.key_id == key_id)
+            .order_by(AfKmsCertificate.issued_at.desc())
+            .first()
+        )
+
+    def get_active_certificate_by_key_id(
+        self, db: Session, key_id: UUID
+    ) -> Optional[AfKmsCertificate]:
+        """Retorna el certificado ACTIVE asociado a una clave (RF-INT-14)."""
+        return (
+            db.query(AfKmsCertificate)
+            .filter(
+                and_(
+                    AfKmsCertificate.key_id == key_id,
+                    AfKmsCertificate.status == CertificateStatus.ACTIVE.value,
+                )
+            )
             .order_by(AfKmsCertificate.issued_at.desc())
             .first()
         )
@@ -206,10 +253,12 @@ class KmsRepository:
         signer_user_id: Optional[UUID],
         signing_reason: Optional[str],
         project_id: UUID,
+        certificate_id: Optional[UUID] = None,
     ) -> AfKmsSignature:
-        """Crea un nuevo registro de firma digital."""
+        """Crea un nuevo registro de firma digital (RF-INT-16)."""
         signature = AfKmsSignature(
             key_id=key_id,
+            certificate_id=certificate_id,
             document_hash=document_hash,
             hash_algorithm=hash_algorithm,
             digital_signature=digital_signature,
@@ -267,6 +316,96 @@ class KmsRepository:
             .filter(AfKmsSignature.project_id == project_id)
             .scalar()
         )
+
+    # ============ RF-INT-19: consulta y auditoría ============
+
+    def _latest_validation_subquery(self, db: Session):
+        """
+        Subconsulta que selecciona, por cada ``signature_id``, la última
+        validación registrada (por ``validated_at``) y su resultado.
+        """
+        sub = (
+            db.query(
+                AfKmsSignatureValidation.signature_id.label("signature_id"),
+                AfKmsSignatureValidation.validation_result.label("validation_result"),
+                AfKmsSignatureValidation.validated_at.label("validated_at"),
+                func.row_number()
+                .over(
+                    partition_by=AfKmsSignatureValidation.signature_id,
+                    order_by=AfKmsSignatureValidation.validated_at.desc(),
+                )
+                .label("rn"),
+            )
+            .subquery()
+        )
+        return sub
+
+    def search_signatures_rfint19(
+        self,
+        db: Session,
+        *,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        signer_user_id: Optional[UUID] = None,
+        document_type: Optional[str] = None,
+        validation_status: Optional[str] = None,
+        limit: int = 5,
+        offset: int = 0,
+    ) -> tuple[list, int]:
+        """
+        Búsqueda paginada de firmas para RF-INT-19.
+
+        Devuelve una lista de tuplas (AfKmsSignature, validation_status,
+        expires_at, signer_name) y el total de registros coincidentes.
+        """
+        from app.models.users import Users as _Users  # import tardío para evitar ciclos
+
+        latest_val = self._latest_validation_subquery(db)
+
+        base = (
+            db.query(
+                AfKmsSignature,
+                latest_val.c.validation_result.label("validation_status"),
+                AfKmsCertificate.valid_to.label("expires_at"),
+                _Users.name.label("signer_name"),
+            )
+            .outerjoin(
+                latest_val,
+                and_(
+                    latest_val.c.signature_id == AfKmsSignature.signature_id,
+                    latest_val.c.rn == 1,
+                ),
+            )
+            .outerjoin(
+                AfKmsCertificate,
+                AfKmsCertificate.certificate_id == AfKmsSignature.certificate_id,
+            )
+            .outerjoin(_Users, _Users.user_id == AfKmsSignature.signer_user_id)
+        )
+
+        if date_from:
+            base = base.filter(AfKmsSignature.signed_at >= date_from)
+        if date_to:
+            base = base.filter(AfKmsSignature.signed_at <= date_to)
+        if signer_user_id:
+            base = base.filter(AfKmsSignature.signer_user_id == signer_user_id)
+        if document_type:
+            base = base.filter(AfKmsSignature.document_type == document_type)
+        if validation_status:
+            base = base.filter(
+                func.lower(latest_val.c.validation_result)
+                == validation_status.lower()
+            )
+
+        total = base.with_entities(func.count(AfKmsSignature.signature_id)).scalar() or 0
+
+        rows = (
+            base.order_by(AfKmsSignature.signed_at.desc())
+            .limit(limit)
+            .offset(offset)
+            .all()
+        )
+        return rows, int(total)
 
     # ==================== Operaciones con Validaciones ====================
 

@@ -109,7 +109,15 @@ class AfKmsKey(Base):
         nullable=False,
     )
 
-    # Fingerprint SHA-256 de la clave pública
+    # Clave privada cifrada con AES-256-GCM usando KMS_MASTER_KEY (RF-INT-12).
+    # Nunca se expone por API. Formato: "AESGCM256:v1:<base64(iv || ciphertext || tag)>".
+    # Nullable para compatibilidad con registros legacy creados antes de RF-INT-12.
+    private_key_encrypted = Column(
+        Text,
+        nullable=True,
+    )
+
+    # Fingerprint SHA-256 sobre la clave pública serializada en formato DER.
     key_fingerprint = Column(
         String(64),
         nullable=False,

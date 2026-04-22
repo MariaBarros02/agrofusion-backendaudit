@@ -209,6 +209,33 @@
 						"description": "Obtiene el historial de rotaciones de una clave"
 					},
 					"response": []
+				},
+				{
+					"name": "7. Revocar Clave - RF-INT-20",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"reason\": \"manual\",\n  \"note\": \"Revocación solicitada por administrador\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/keys/{{key_id}}/revoke",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "keys", "{{key_id}}", "revoke"]
+						},
+						"description": "RF-INT-20: Revoca una clave criptográfica. Si tiene un certificado activo asociado, también se revoca en la misma transacción. Motivos permitidos: compromised, manual, policy."
+					},
+					"response": []
 				}
 			],
 			"description": "Endpoints para gestión de claves criptográficas"
@@ -217,7 +244,7 @@
 			"name": "Firmas Digitales",
 			"item": [
 				{
-					"name": "1. Crear Firma Digital",
+					"name": "1. Crear Firma Digital - JWS (document_type=json)",
 					"event": [
 						{
 							"listen": "prerequest",
@@ -229,12 +256,23 @@
 									"    throw new Error('ERROR: Primero debes crear una clave. Ejecuta \"1. Crear Clave Criptográfica\" primero.');",
 									"}",
 									"",
-									"// Calcular hash del documento automáticamente",
+									"// Calcular hash SHA-256 del documento automáticamente",
 									"const document = pm.collectionVariables.get('document_content') || 'Documento de prueba';",
 									"const hash = CryptoJS.SHA256(document).toString();",
 									"pm.collectionVariables.set('document_hash', hash);",
+									"",
+									"// RF-INT-16: document_id es obligatorio. Generamos uno si no existe.",
+									"let docId = pm.collectionVariables.get('document_id');",
+									"if (!docId || docId === '') {",
+									"    docId = (typeof crypto !== 'undefined' && crypto.randomUUID)",
+									"        ? crypto.randomUUID()",
+									"        : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c){var r=Math.random()*16|0;var v=c==='x'?r:(r&0x3)|0x8;return v.toString(16);});",
+									"    pm.collectionVariables.set('document_id', docId);",
+									"}",
+									"",
 									"console.log('✓ Hash calculado:', hash);",
-									"console.log('✓ Usando key_id:', keyId);"
+									"console.log('✓ Usando key_id:', keyId);",
+									"console.log('✓ document_id:', docId);"
 								],
 								"type": "text/javascript"
 							}
@@ -243,7 +281,6 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"// Capturar signature_id y digital_signature automáticamente",
 									"if (pm.response.code === 201) {",
 									"    const response = pm.response.json();",
 									"    if (response.signature_id) {",
@@ -252,7 +289,10 @@
 									"    }",
 									"    if (response.digital_signature) {",
 									"        pm.collectionVariables.set('digital_signature', response.digital_signature);",
-									"        console.log('✓ digital_signature guardado');",
+									"        console.log('✓ digital_signature guardado (formato ' + response.signature_format + ')');",
+									"    }",
+									"    if (response.certificate_id) {",
+									"        pm.collectionVariables.set('certificate_id', response.certificate_id);",
 									"    }",
 									"}"
 								],
@@ -274,19 +314,58 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"document_hash\": \"{{document_hash}}\",\n  \"key_id\": \"{{key_id}}\",\n  \"hash_algorithm\": \"SHA-256\",\n  \"signature_format\": \"PKCS7\",\n  \"include_timestamp\": true,\n  \"document_type\": \"test_document\"\n}"
+							"raw": "{\n  \"document_hash\": \"{{document_hash}}\",\n  \"key_id\": \"{{key_id}}\",\n  \"hash_algorithm\": \"SHA-256\",\n  \"include_timestamp\": true,\n  \"document_id\": \"{{document_id}}\",\n  \"document_type\": \"json\",\n  \"signing_reason\": \"Prueba RF-INT-16 - JWS\"\n}"
 						},
 						"url": {
 							"raw": "{{base_url}}/kms/signatures",
 							"host": ["{{base_url}}"],
 							"path": ["kms", "signatures"]
 						},
-						"description": "Firma digitalmente un documento usando una clave del KMS. El hash se calcula automáticamente."
+						"description": "RF-INT-16: firma digital. El sistema selecciona automáticamente el formato según document_type. Con 'json' devuelve un token JWS (header.payload.signature). El hash se calcula automáticamente y document_id se genera si no existe."
 					},
 					"response": []
 				},
 				{
-					"name": "2. Validar Firma Digital",
+					"name": "1b. Crear Firma Digital - PKCS#7 (document_type=pdf)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"const keyId = pm.collectionVariables.get('key_id');",
+									"if (!keyId || keyId === '') {",
+									"    throw new Error('ERROR: Primero debes crear una clave. Ejecuta \"1. Crear Clave Criptográfica\" primero.');",
+									"}",
+									"",
+									"const document = pm.collectionVariables.get('document_content') || 'Documento de prueba';",
+									"const hash = CryptoJS.SHA256(document).toString();",
+									"pm.collectionVariables.set('document_hash', hash);",
+									"",
+									"// document_id obligatorio (RF-INT-16).",
+									"const docId = (typeof crypto !== 'undefined' && crypto.randomUUID)",
+									"    ? crypto.randomUUID()",
+									"    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c){var r=Math.random()*16|0;var v=c==='x'?r:(r&0x3)|0x8;return v.toString(16);});",
+									"pm.collectionVariables.set('document_id', docId);",
+									"console.log('✓ document_id generado para PKCS#7:', docId);"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    const r = pm.response.json();",
+									"    if (r.signature_id) pm.collectionVariables.set('signature_id', r.signature_id);",
+									"    if (r.digital_signature) pm.collectionVariables.set('digital_signature', r.digital_signature);",
+									"    console.log('✓ Formato recibido:', r.signature_format);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
 						"method": "POST",
 						"header": [
@@ -301,14 +380,145 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"document_hash\": \"{{document_hash}}\",\n  \"digital_signature\": \"{{digital_signature}}\",\n  \"signature_id\": \"{{signature_id}}\",\n  \"hash_algorithm\": \"SHA-256\"\n}"
+							"raw": "{\n  \"document_hash\": \"{{document_hash}}\",\n  \"key_id\": \"{{key_id}}\",\n  \"hash_algorithm\": \"SHA-256\",\n  \"include_timestamp\": true,\n  \"document_id\": \"{{document_id}}\",\n  \"document_type\": \"pdf\",\n  \"signing_reason\": \"Prueba RF-INT-16 - PKCS#7\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/signatures",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures"]
+						},
+						"description": "RF-INT-16: con document_type='pdf' (u otro binario: xml, csv, zip...), el sistema genera un objeto PKCS#7/CMS DER en Base64 que contiene la firma y el certificado del firmante."
+					},
+					"response": []
+				},
+				{
+					"name": "2. Validar Firma Digital - Mínimo (RF-INT-17)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Validación ejecutada', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"var j = pm.response.json();",
+									"console.log('validation_result =', j.validation_result);",
+									"console.log('validation_reason =', j.validation_reason);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Content-Type", "value": "application/json"},
+							{"key": "Authorization", "value": "Bearer {{access_token}}"}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"signature_id\": \"{{signature_id}}\"\n}"
 						},
 						"url": {
 							"raw": "{{base_url}}/kms/signatures/verify",
 							"host": ["{{base_url}}"],
 							"path": ["kms", "signatures", "verify"]
 						},
-						"description": "Valida una firma digital verificando su integridad criptográfica"
+						"description": "RF-INT-17: valida la firma aportando SOLO el signature_id. El sistema reconstruye clave, certificado, formato (JWS o PKCS#7) y valida el certificado en modo histórico con reference_date = signed_at. Resultado posible: valid, invalid, expired, revoked."
+					},
+					"response": []
+				},
+				{
+					"name": "2b. Validar Firma con Documento Modificado (RF-INT-17)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Se detecta manipulación', function () {",
+									"    pm.response.to.have.status(200);",
+									"    var j = pm.response.json();",
+									"    pm.expect(['INVALID']).to.include(j.validation_result);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Content-Type", "value": "application/json"},
+							{"key": "Authorization", "value": "Bearer {{access_token}}"}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"signature_id\": \"{{signature_id}}\",\n  \"document_content\": \"Este documento fue ALTERADO despues de firmar.\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/signatures/verify",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures", "verify"]
+						},
+						"description": "RF-INT-17 - detección de manipulación: el sistema recalcula el hash del document_content enviado y lo compara con el almacenado. Si no coincide, retorna INVALID con validation_reason = 'Document hash mismatch (document tampered)'."
+					},
+					"response": []
+				},
+				{
+					"name": "2d. Validar Firma - Presentable al Usuario (RF-INT-18)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Respuesta presentable', function () {",
+									"    pm.response.to.have.status(200);",
+									"    var j = pm.response.json();",
+									"    pm.expect(j).to.have.property('estado');",
+									"    pm.expect(j).to.have.property('resultado_general');",
+									"    pm.expect(j).to.have.property('fecha_firma');",
+									"    pm.expect(j).to.have.property('datos_tecnicos');",
+									"    console.log('Estado:', j.estado);",
+									"    console.log('Firmante:', j.firmante);",
+									"    console.log('Resultado general:', j.resultado_general);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Authorization", "value": "Bearer {{access_token}}"}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/signatures/{{signature_id}}/validate-presentable",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures", "{{signature_id}}", "validate-presentable"]
+						},
+						"description": "RF-INT-18: valida la firma únicamente con el signature_id en la URL y devuelve el resultado en lenguaje comprensible (Válida / Inválida / Expirada / Revocada), el nombre del firmante resuelto desde el módulo de usuarios, la fecha de firma, el identificador del documento y los datos técnicos (hash, algoritmo, certificado) como información de solo lectura. El usuario no ingresa datos técnicos."
+					},
+					"response": []
+				},
+				{
+					"name": "2c. Validar Firma Externa (document_hash + digital_signature)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Content-Type", "value": "application/json"},
+							{"key": "Authorization", "value": "Bearer {{access_token}}"}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"document_hash\": \"{{document_hash}}\",\n  \"digital_signature\": \"{{digital_signature}}\",\n  \"key_id\": \"{{key_id}}\",\n  \"hash_algorithm\": \"SHA-256\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/signatures/verify",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures", "verify"]
+						},
+						"description": "Validación de una firma EXTERNA/EXPORTADA: el cliente aporta el hash, la firma (JWS o CMS Base64) y el key_id asociado. Útil para verificar firmas importadas."
 					},
 					"response": []
 				},
@@ -382,42 +592,133 @@
 						"description": "Obtiene todas las firmas asociadas a un documento específico"
 					},
 					"response": []
+				},
+				{
+					"name": "6. Consultar Firmas - RF-INT-19 (paginación 5 + filtros)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Listado paginado', function () {",
+									"    pm.response.to.have.status(200);",
+									"    var j = pm.response.json();",
+									"    pm.expect(j).to.have.property('items');",
+									"    pm.expect(j).to.have.property('total_count');",
+									"    pm.expect(j.limit).to.eql(5);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{"key": "Authorization", "value": "Bearer {{access_token}}"}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/signatures/query?offset=0",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures", "query"],
+							"query": [
+								{"key": "offset", "value": "0"},
+								{"key": "date_from", "value": "", "disabled": true},
+								{"key": "date_to", "value": "", "disabled": true},
+								{"key": "signer_user_id", "value": "", "disabled": true},
+								{"key": "document_type", "value": "", "disabled": true},
+								{"key": "validation_status", "value": "valid", "disabled": true}
+							]
+						},
+						"description": "RF-INT-19: listado paginado (5 por página) de firmas digitales con filtros opcionales por rango de fechas (date_from/date_to), usuario firmante, tipo de documento y estado de validación. No expone digital_signature ni contenido del certificado."
+					},
+					"response": []
+				},
+				{
+					"name": "7. Detalle de Firma - RF-INT-19 (sin datos sensibles)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{"key": "Authorization", "value": "Bearer {{access_token}}"}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/signatures/{{signature_id}}/detail",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures", "{{signature_id}}", "detail"]
+						},
+						"description": "RF-INT-19: detalle funcional de una firma. No incluye digital_signature ni contenido del certificado. Incluye key_id y certificate_id sólo para trazabilidad interna."
+					},
+					"response": []
+				},
+				{
+					"name": "8. Trazabilidad de Firma - RF-INT-19 (audit trail)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{"key": "Authorization", "value": "Bearer {{access_token}}"}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/signatures/{{signature_id}}/audit-trail?limit=50&offset=0",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "signatures", "{{signature_id}}", "audit-trail"],
+							"query": [
+								{"key": "limit", "value": "50"},
+								{"key": "offset", "value": "0"}
+							]
+						},
+						"description": "RF-INT-19: eventos de af_audit_log relacionados con la firma: su creación, validaciones y eventos del ciclo de vida de la clave/certificado subyacentes."
+					},
+					"response": []
+				},
+				{
+					"name": "9. Eventos KMS en Auditoría - RF-INT-19",
+					"request": {
+						"method": "GET",
+						"header": [
+							{"key": "Authorization", "value": "Bearer {{access_token}}"}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/audit-events?limit=50&offset=0",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "audit-events"],
+							"query": [
+								{"key": "limit", "value": "50"},
+								{"key": "offset", "value": "0"},
+								{"key": "action_code", "value": "SIGNATURE_CREATED", "disabled": true},
+								{"key": "date_from", "value": "", "disabled": true},
+								{"key": "date_to", "value": "", "disabled": true},
+								{"key": "actor_id", "value": "", "disabled": true}
+							]
+						},
+						"description": "RF-INT-19: consulta paginada de eventos de auditoría del módulo KMS. Soporta filtrar por action_code (KMS_CA_CREATED, KMS_KEY_CREATED, KMS_KEY_ROTATED, KMS_KEY_REVOKED, KMS_CERT_CREATED, KMS_CERT_REVOKED, KMS_CERT_VALIDATED, SIGNATURE_CREATED, SIGNATURE_VALIDATED), rango de fechas y usuario."
+					},
+					"response": []
 				}
 			],
 			"description": "Endpoints para firma y validación de documentos"
 		},
 		{
-			"name": "Certificados",
+			"name": "Certificados (RF-INT-14 / RF-INT-15)",
 			"item": [
 				{
-					"name": "Registrar Certificado X.509",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"key_id\": \"{{key_id}}\",\n  \"certificate_pem\": \"-----BEGIN CERTIFICATE-----\\n...\\n-----END CERTIFICATE-----\",\n  \"serial_number\": \"1234567890\",\n  \"subject\": \"CN=Test Certificate\",\n  \"issuer\": \"CN=Test CA\",\n  \"valid_from\": \"2025-01-01T00:00:00Z\",\n  \"valid_to\": \"2026-12-31T23:59:59Z\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/kms/certificates",
-							"host": ["{{base_url}}"],
-							"path": ["kms", "certificates"]
-						},
-						"description": "Registra un certificado X.509 asociado a una clave del KMS"
-					},
-					"response": []
-				},
-				{
 					"name": "Obtener Certificado de Clave",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    const body = pm.response.json();",
+									"    if (body && body.certificate_id) {",
+									"        pm.collectionVariables.set('certificate_id', body.certificate_id);",
+									"        console.log('✓ certificate_id guardado:', body.certificate_id);",
+									"    }",
+									"}"
+								]
+							}
+						}
+					],
 					"request": {
 						"method": "GET",
 						"header": [
@@ -431,12 +732,94 @@
 							"host": ["{{base_url}}"],
 							"path": ["kms", "certificates", "key", "{{key_id}}"]
 						},
-						"description": "Obtiene el certificado más reciente asociado a una clave"
+						"description": "Obtiene el certificado X.509 emitido automáticamente para una clave. RF-INT-14: la emisión ocurre internamente al crear la clave (RF-INT-12); no existe endpoint público para emitir certificados manualmente."
+					},
+					"response": []
+				},
+				{
+					"name": "Validar Certificado - Modo Actual (RF-INT-15)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/certificates/{{certificate_id}}/validate?mode=current",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "certificates", "{{certificate_id}}", "validate"],
+							"query": [
+								{
+									"key": "mode",
+									"value": "current"
+								}
+							]
+						},
+						"description": "RF-INT-15: Valida integridad, firma CA, vigencia y estado ACTUAL del certificado. Resultado: valid | invalid | expired | revoked."
+					},
+					"response": []
+				},
+				{
+					"name": "Validar Certificado - Modo Histórico (RF-INT-15)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/kms/certificates/{{certificate_id}}/validate?mode=historical&reference_date=2026-01-01T00:00:00Z",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "certificates", "{{certificate_id}}", "validate"],
+							"query": [
+								{
+									"key": "mode",
+									"value": "historical"
+								},
+								{
+									"key": "reference_date",
+									"value": "2026-01-01T00:00:00Z",
+									"description": "Fecha ISO-8601 obligatoria en modo histórico"
+								}
+							]
+						},
+						"description": "RF-INT-15: Valida el estado que tenía el certificado en la fecha indicada. Útil para verificar firmas antiguas (RF-INT-19)."
+					},
+					"response": []
+				},
+				{
+					"name": "Revocar Certificado - RF-INT-20",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"reason\": \"compromised\",\n  \"note\": \"Revocación administrativa del certificado\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/kms/certificates/{{certificate_id}}/revoke",
+							"host": ["{{base_url}}"],
+							"path": ["kms", "certificates", "{{certificate_id}}", "revoke"]
+						},
+						"description": "RF-INT-20: Revoca un certificado digital de forma transaccional e irreversible. Actualiza status='revoked' y revoked_at. Registra KMS_CERT_REVOKED en auditoría. Motivos: compromised, manual, policy."
 					},
 					"response": []
 				}
 			],
-			"description": "Endpoints para gestión de certificados X.509"
+			"description": "RF-INT-14: emisión automática de certificados X.509. RF-INT-15: validación de integridad (modos current/historical). RF-INT-20: revocación."
 		},
 		{
 			"name": "Root CA (RF-INT-11)",
@@ -596,6 +979,12 @@
 			"value": "",
 			"type": "string",
 			"description": "UUID de la Root CA activa. Se captura automáticamente al ejecutar POST /kms/ca-root."
+		},
+		{
+			"key": "certificate_id",
+			"value": "",
+			"type": "string",
+			"description": "UUID del certificado X.509 emitido para la clave activa. Se captura automáticamente al ejecutar GET /kms/certificates/key/{{key_id}} (RF-INT-14/15)."
 		}
 	]
 }

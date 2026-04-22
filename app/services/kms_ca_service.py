@@ -29,14 +29,15 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from fastapi import status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.errors import audit_error
 from app.models.af_kms_ca_root import AfKmsCaRoot, CaRootStatus
-from app.models.af_kms_keys import KeyAlgorithm
+from app.models.af_kms_certificates import AfKmsCertificate, CertificateStatus
+from app.models.af_kms_keys import AfKmsKey, KeyAlgorithm, KeyStatus
 from app.repositories.kms_repository import KmsRepository
 
 
@@ -380,3 +381,220 @@ class KmsCaService:
             created_by=created_by,
         )
         return ca
+
+    # ---------------------------------------------------------------
+    # Emisión de certificados para claves de proyecto (RF-INT-14)
+    # ---------------------------------------------------------------
+
+    @staticmethod
+    def _build_leaf_subject(project_id: UUID) -> x509.Name:
+        """
+        Construye el subject de un certificado hijo siguiendo el formato
+        obligatorio de RF-INT-14: ``CN={project_id}, O=AgroFusion, C=CO``.
+        """
+        return x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, str(project_id)),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "AgroFusion"),
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "CO"),
+        ])
+
+    def _load_ca_private_key(self, ca: AfKmsCaRoot):
+        """Descifra y carga la clave privada de la Root CA."""
+        private_pem_bytes = self.decrypt_private_key(ca.private_key_encrypted)
+        return serialization.load_pem_private_key(
+            private_pem_bytes, password=None, backend=self.backend
+        )
+
+    @staticmethod
+    def _signature_algorithm_label(ca_algorithm: KeyAlgorithm, sign_hash: hashes.HashAlgorithm) -> str:
+        """
+        Devuelve una etiqueta legible (cumpliendo con lo requerido por RF-INT-14)
+        del algoritmo de firma usado por la Root CA.
+        """
+        hash_name = sign_hash.name.upper()
+        if ca_algorithm in (KeyAlgorithm.RSA_2048, KeyAlgorithm.RSA_4096):
+            return f"{hash_name}withRSA"
+        if ca_algorithm in (KeyAlgorithm.ECDSA_P256, KeyAlgorithm.ECDSA_P384):
+            return f"{hash_name}withECDSA"
+        return hash_name
+
+    def issue_certificate_for_key(
+        self,
+        db: Session,
+        *,
+        key: AfKmsKey,
+    ) -> AfKmsCertificate:
+        """
+        Emite un certificado X.509 v3 para una clave de proyecto (RF-INT-14).
+
+        Proceso:
+            1. Valida que la clave esté en estado ``active``.
+            2. Obtiene la Root CA activa (RF-INT-11).
+            3. Construye el subject como ``CN={project_id}, O=AgroFusion, C=CO``.
+            4. Construye un certificado X.509 v3 con la clave pública del usuario,
+               firmado por la Root CA usando SHA-256 o superior.
+            5. Verifica que la clave pública del certificado coincide con la
+               almacenada en ``af_kms_keys`` (RF-INT-14 – criterio de coherencia).
+            6. Calcula el fingerprint SHA-256 sobre el DER.
+            7. Persiste en ``af_kms_certificates`` con ``status = active``.
+
+        Solo es invocado internamente por ``KmsService.create_key``; no existe
+        endpoint público que lo exponga (RF-INT-14).
+        """
+        # 1. Validar estado de la clave.
+        if key.status != KeyStatus.ACTIVE:
+            raise audit_error(
+                "KEY_NOT_ACTIVE",
+                status.HTTP_400_BAD_REQUEST,
+                {"status": getattr(key.status, "value", str(key.status))},
+            )
+
+        # 2. Root CA activa.
+        ca = self.kms_repo.get_active_ca_root(db)
+        if ca is None:
+            raise audit_error(
+                "CA_ROOT_NOT_FOUND",
+                status.HTTP_400_BAD_REQUEST,
+                {"error": "No existe una Root CA activa para emitir certificados."},
+            )
+
+        ca_private_key = self._load_ca_private_key(ca)
+
+        # 3. Cargar clave pública del usuario (del registro af_kms_keys).
+        user_public_key = serialization.load_pem_public_key(
+            key.public_key.encode("utf-8") if isinstance(key.public_key, str) else key.public_key,
+            backend=self.backend,
+        )
+
+        # 4. Construir subject y issuer.
+        subject = self._build_leaf_subject(key.project_id)
+        issuer = self._parse_subject(ca.subject)
+
+        # 5. Período de validez = el de la clave.
+        valid_from = key.valid_from
+        valid_to = key.valid_to
+        if valid_from and valid_from.tzinfo is None:
+            valid_from = valid_from.replace(tzinfo=timezone.utc)
+        if valid_to and valid_to.tzinfo is None:
+            valid_to = valid_to.replace(tzinfo=timezone.utc)
+        if valid_from is None or valid_to is None or valid_to <= valid_from:
+            raise audit_error(
+                "CERT_INVALID_VALIDITY",
+                status.HTTP_400_BAD_REQUEST,
+                {"valid_from": str(valid_from), "valid_to": str(valid_to)},
+            )
+
+        # 6. Hash de firma: SHA-256 o superior (prohíbe MD5 y SHA-1).
+        ca_algo = KeyAlgorithm(self._infer_ca_algorithm(ca))
+        sign_hash: hashes.HashAlgorithm = (
+            hashes.SHA384() if ca_algo == KeyAlgorithm.ECDSA_P384 else hashes.SHA256()
+        )
+
+        # 7. Construir certificado X.509 v3.
+        serial_number = x509.random_serial_number()
+        builder = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(user_public_key)
+            .serial_number(serial_number)
+            .not_valid_before(valid_from)
+            .not_valid_after(valid_to)
+            .add_extension(
+                x509.BasicConstraints(ca=False, path_length=None),
+                critical=True,
+            )
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=True,
+                    content_commitment=True,
+                    key_encipherment=False,
+                    data_encipherment=False,
+                    key_agreement=False,
+                    key_cert_sign=False,
+                    crl_sign=False,
+                    encipher_only=False,
+                    decipher_only=False,
+                ),
+                critical=True,
+            )
+            .add_extension(
+                x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CODE_SIGNING]),
+                critical=False,
+            )
+            .add_extension(
+                x509.SubjectKeyIdentifier.from_public_key(user_public_key),
+                critical=False,
+            )
+        )
+
+        certificate = builder.sign(
+            private_key=ca_private_key,
+            algorithm=sign_hash,
+            backend=self.backend,
+        )
+
+        # 8. Validar coherencia de clave pública (RF-INT-14).
+        cert_pub_der = certificate.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        stored_pub_der = user_public_key.public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        if cert_pub_der != stored_pub_der:
+            raise audit_error(
+                "CERT_KEY_MISMATCH",
+                status.HTTP_400_BAD_REQUEST,
+                {"key_id": str(key.key_id)},
+            )
+
+        # 9. Serializar y calcular fingerprint sobre DER.
+        cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
+        cert_der = certificate.public_bytes(serialization.Encoding.DER)
+        fingerprint_hex = hashlib.sha256(cert_der).hexdigest()
+        serial_str = format(certificate.serial_number, "x").upper()
+        signature_algo = self._signature_algorithm_label(ca_algo, sign_hash)
+
+        subject_str = certificate.subject.rfc4514_string()
+        issuer_str = certificate.issuer.rfc4514_string()
+
+        return self.kms_repo.create_certificate(
+            db=db,
+            key_id=key.key_id,
+            certificate_pem=cert_pem.decode("ascii"),
+            serial_number=serial_str,
+            subject=subject_str,
+            issuer=issuer_str,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            fingerprint=fingerprint_hex,
+            signature_algorithm=signature_algo,
+            status_value=CertificateStatus.ACTIVE.value,
+        )
+
+    @staticmethod
+    def _infer_ca_algorithm(ca: AfKmsCaRoot) -> str:
+        """
+        Infiere el algoritmo de la Root CA inspeccionando su clave pública PEM.
+
+        El objetivo es evitar tener que guardar el algoritmo en la tabla
+        ``af_kms_ca_root``: se deduce con la librería ``cryptography``.
+        """
+        pk = serialization.load_pem_public_key(
+            ca.public_key.encode("utf-8") if isinstance(ca.public_key, str) else ca.public_key,
+            backend=default_backend(),
+        )
+        if isinstance(pk, rsa.RSAPublicKey):
+            size = pk.key_size
+            return (
+                KeyAlgorithm.RSA_4096.value if size >= 4096 else KeyAlgorithm.RSA_2048.value
+            )
+        if isinstance(pk, ec.EllipticCurvePublicKey):
+            curve_name = pk.curve.name.lower()
+            if "384" in curve_name:
+                return KeyAlgorithm.ECDSA_P384.value
+            return KeyAlgorithm.ECDSA_P256.value
+        # Fallback razonable.
+        return KeyAlgorithm.RSA_2048.value
