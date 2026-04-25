@@ -6,6 +6,7 @@ certificados digitales emitidos por autoridades certificadoras.
 """
 
 import uuid
+import enum
 from sqlalchemy import (
     Column,
     String,
@@ -17,6 +18,14 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from app.core.database import Base
+
+
+class CertificateStatus(str, enum.Enum):
+    """Estados del ciclo de vida de un certificado X.509 (RF-INT-14)."""
+
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
 
 
 class AfKmsCertificate(Base):
@@ -82,7 +91,7 @@ class AfKmsCertificate(Base):
         index=True,
     )
 
-    # Fingerprint SHA-256 del certificado
+    # Fingerprint SHA-256 sobre el certificado en formato DER (RF-INT-14).
     fingerprint = Column(
         String(64),
         nullable=False,
@@ -90,7 +99,28 @@ class AfKmsCertificate(Base):
         index=True,
     )
 
-    # Fecha de emisión
+    # Algoritmo usado por la Root CA para firmar el certificado
+    # (ej. sha256WithRSAEncryption, ecdsa-with-SHA256).
+    signature_algorithm = Column(
+        String(64),
+        nullable=True,
+    )
+
+    # Estado del certificado: active | expired | revoked.
+    status = Column(
+        String(20),
+        nullable=True,
+        default=CertificateStatus.ACTIVE.value,
+        index=True,
+    )
+
+    # Fecha de revocación (si aplica).
+    revoked_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Fecha de emisión (``created_at`` lógico por RF-INT-14).
     issued_at = Column(
         DateTime(timezone=True),
         nullable=False,

@@ -22,11 +22,15 @@ import enum
 
 
 class SignatureFormat(str, enum.Enum):
-    """Formatos de firma digital soportados."""
+    """
+    Formatos de firma digital soportados por el sistema (RF-INT-16).
+
+    Solo se permiten JWS (RFC 7515) y PKCS#7/CMS. Los formatos XAdES y CAdES
+    están explícitamente prohibidos por el requerimiento.
+    """
+
     PKCS7 = "PKCS7"
     JWS = "JWS"
-    XADES = "XAdES"
-    CADES = "CAdES"
 
 
 class HashAlgorithm(str, enum.Enum):
@@ -58,6 +62,15 @@ class AfKmsSignature(Base):
         UUID(as_uuid=True),
         ForeignKey("public.af_kms_keys.key_id", onupdate="NO ACTION", ondelete="NO ACTION"),
         nullable=False,
+        index=True,
+    )
+
+    # Certificado usado para firmar (RF-INT-16: obligatorio).
+    certificate_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.af_kms_certificates.certificate_id", onupdate="NO ACTION", ondelete="NO ACTION"),
+        nullable=True,  # Nullable a nivel ORM para compatibilidad con filas
+                         # históricas; la lógica de negocio lo exige en creación.
         index=True,
     )
 

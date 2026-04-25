@@ -12,6 +12,7 @@ from app.models.cat_vocabularies import CatVocabulary
 from app.models.af_external_projects import AfExternalProject
 from app.models.af_kms_keys import AfKmsKey, KeyPurpose, KeyStatus, KeyAlgorithm
 from app.models.af_kms_certificates import AfKmsCertificate
+from app.models.af_kms_ca_root import AfKmsCaRoot, CaRootStatus
 from app.models.af_kms_signatures import AfKmsSignature, SignatureFormat, HashAlgorithm
 from app.models.af_kms_signature_validations import AfKmsSignatureValidation, ValidationResult
 from app.models.af_kms_key_rotations import AfKmsKeyRotation, RotationReason
