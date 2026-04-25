@@ -1,7 +1,7 @@
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.responses import FileResponse
 from jose import JWTError
 from sqlalchemy.orm import Session
@@ -1774,12 +1774,11 @@ def _require_audit_export_permission(db: Session, current_user: dict) -> None:
 )
 def create_audit_export(
     body: CreateAuditExportRequest,
-    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     _require_audit_export_permission(db, current_user)
-    return create_audit_export_job(db, request=request, current_user=current_user, body=body)
+    return create_audit_export_job(db, current_user=current_user, body=body)
 
 
 @router.get(
@@ -1848,30 +1847,19 @@ def download_audit_export(
     if not path.is_file():
         audit_error("EXPORT_FILE_MISSING", status.HTTP_404_NOT_FOUND)
 
-    repo = AuditRepository()
-    try:
-        ag = repo.get_project_by_code(db, code="AGROFUSION")
-        pid = ag.af_project_id if ag else None
-        repo.log_event_optional_term(
-            db,
-            action_code="EXPORT_DOWNLOADED",
-            outcome="success",
-            module_code="AUDIT_EXPORT",
-            project_id=pid,
-            actor_id=UUID(payload["sub"]),
-            metadata={"export_request_id": str(export_id), "file_hash": job.get("file_hash")},
-        )
-    except Exception:
-        pass
+    # No se audita EXPORT_DOWNLOADED: un solo registro por export (COMPLETED/FAILED en el worker).
 
     er.increment_download(db, export_id)
 
-    media = {
-        "CSV": "text/csv; charset=utf-8",
-        "JSONL": "application/x-ndjson; charset=utf-8",
-        "XLSX": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "PDF": "application/pdf",
-    }.get(job.get("format", ""), "application/octet-stream")
+    if path.suffix.lower() == ".zip":
+        media = "application/zip"
+    else:
+        media = {
+            "CSV": "text/csv; charset=utf-8",
+            "JSONL": "application/x-ndjson; charset=utf-8",
+            "XLSX": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "PDF": "application/pdf",
+        }.get(job.get("format", ""), "application/octet-stream")
 
     fname = job.get("download_filename") or (
         f"AgroFusion_Auditoria_{export_id}.{str(path.suffix).lstrip('.')}"
@@ -1910,20 +1898,6 @@ def delete_audit_export(
 
     AuditExportRepository().delete(db, export_id)
 
-    repo = AuditRepository()
-    try:
-        ag = repo.get_project_by_code(db, code="AGROFUSION")
-        pid = ag.af_project_id if ag else None
-        repo.log_event_optional_term(
-            db,
-            action_code="EXPORT_DELETED",
-            outcome="success",
-            module_code="AUDIT_EXPORT",
-            project_id=pid,
-            actor_id=uid,
-            metadata={"export_request_id": str(export_id)},
-        )
-    except Exception:
-        pass
+    # Sin evento de auditoría adicional: un solo registro por export (COMPLETED/FAILED).
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

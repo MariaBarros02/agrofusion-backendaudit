@@ -4,18 +4,21 @@ Worker en hilo para procesar exportaciones de auditoría sin bloquear la API.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+import zipfile
+from datetime import datetime, timezone
 from uuid import UUID
 
 import hashlib
 from pathlib import Path
 
+from fastapi import HTTPException
+
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.security import create_export_download_token
 from app.models.users import Users
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.audit_export_repository import (
@@ -24,7 +27,6 @@ from app.repositories.audit_export_repository import (
     query_filters_for_worker,
 )
 from app.repositories.kms_repository import KmsRepository
-from app.repositories.email_repository import EmailRepository
 from app.models.af_kms_keys import KeyPurpose
 from app.models.af_kms_signatures import HashAlgorithm, SignatureFormat
 from app.services.audit_export_formats import (
@@ -36,6 +38,7 @@ from app.services.audit_export_formats import (
     XlsxExportWriter,
     build_export_row,
 )
+from app.services.audit_export_service import _filters_summary
 from app.services.audit_export_store import job_store
 from app.services.kms_service import KmsService
 
@@ -51,6 +54,17 @@ def _parse_iso_dt(value: str | None):
         return None
     s = value.replace("Z", "+00:00")
     return datetime.fromisoformat(s)
+
+
+def _format_export_error(exc: BaseException) -> str:
+    """Mensaje legible para BD/UI (p. ej. detalle HTTPException del KMS)."""
+    if isinstance(exc, HTTPException):
+        d = exc.detail
+        if isinstance(d, dict) and d.get("code") is not None:
+            return f"{d['code']}: {d.get('meta', {})!r}"
+        if d is not None:
+            return str(d)
+    return str(exc)
 
 
 def _resolve_signing_key_id(db) -> UUID | None:
@@ -70,6 +84,68 @@ def _resolve_signing_key_id(db) -> UUID | None:
     if not keys:
         return None
     return keys[0].key_id
+
+
+def _build_signed_export_zip(
+    *,
+    data_path: Path,
+    export_id: UUID,
+    batch_hash: str,
+    fmt: str,
+    request_by: UUID,
+    requester_name: str | None,
+    requester_email: str | None,
+    total_written: int,
+    digital_signature: str,
+    kms_signature_id: str,
+    signing_key_id: UUID,
+    exported_at: datetime,
+) -> Path:
+    """
+    Comprime el archivo de datos y un manifest.json (batch_hash, metadatos, firma)
+    en un ZIP, elimina el archivo de datos suelto y devuelve la ruta del .zip.
+    """
+    manifest: dict = {
+        "schema_version": 1,
+        "document_type": "SIGNED_AUDIT_EXPORT",
+        "export_id": str(export_id),
+        "batch_hash": batch_hash,
+        "hash_algorithm": "SHA-256",
+        "exported_at": exported_at.isoformat(),
+        "export_format": fmt,
+        "record_count": total_written,
+        "requested_by": {
+            "user_id": str(request_by),
+            "name": requester_name,
+            "email": requester_email,
+        },
+        "integrity": {
+            "digital_signature_base64": digital_signature,
+            "kms_signature_id": kms_signature_id,
+            "signing_key_id": str(signing_key_id),
+            "signature_format": "PKCS7",
+        },
+    }
+    manifest_path = data_path.parent / f"{export_id}.manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    zip_path = data_path.parent / f"{export_id}.zip"
+    if zip_path.exists():
+        zip_path.unlink()
+    data_arcname = f"records{data_path.suffix}"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(data_path, arcname=data_arcname)
+        zf.write(manifest_path, arcname="manifest.json")
+    try:
+        data_path.unlink()
+    except OSError:
+        pass
+    try:
+        manifest_path.unlink()
+    except OSError:
+        pass
+    return zip_path
 
 
 def _run_export_body(job: dict) -> None:
@@ -101,7 +177,9 @@ def _run_export_body(job: dict) -> None:
             entity_types=f.get("entity_types") or None,
         )
         total = ar.count_audit_export(db, base)
-        fmt = job["format"]
+        fmt = str(job.get("format") or "").strip().upper()
+        if not fmt:
+            raise ValueError("format requerido")
         pdf_max = settings.export_pdf_max_rows
         if fmt == "PDF" and total > pdf_max:
             raise ValueError(
@@ -130,7 +208,7 @@ def _run_export_body(job: dict) -> None:
         if fmt == "CSV":
             writer: object = CsvExportWriter(out_path, fields)
         elif fmt == "JSONL":
-            writer = JsonlExportWriter(out_path)
+            writer = JsonlExportWriter(out_path, fields)
         elif fmt == "XLSX":
             writer = XlsxExportWriter(out_path, fields)
         elif fmt == "PDF":
@@ -174,17 +252,20 @@ def _run_export_body(job: dict) -> None:
 
         writer.close()
 
-        file_bytes = out_path.read_bytes()
-        file_hash = hashlib.sha256(file_bytes).hexdigest()
+        data_path = out_path
+        data_bytes = data_path.read_bytes()
+        batch_hash = hashlib.sha256(data_bytes).hexdigest()
 
         key_id = _resolve_signing_key_id(db)
         sig_b64 = None
         kms_sig_id = None
+        final_path = data_path
+        file_bytes = data_bytes
         if key_id:
             kms = KmsService()
             sig = kms.sign_document(
                 db,
-                document_hash=file_hash,
+                document_hash=batch_hash,
                 key_id=key_id,
                 hash_algorithm=HashAlgorithm.SHA256,
                 signature_format=SignatureFormat.PKCS7,
@@ -197,11 +278,28 @@ def _run_export_body(job: dict) -> None:
             )
             sig_b64 = sig.digital_signature
             kms_sig_id = str(sig.signature_id)
+            requester = db.query(Users).filter(Users.user_id == request_by).first()
+            package_at = datetime.now(timezone.utc)
+            final_path = _build_signed_export_zip(
+                data_path=data_path,
+                export_id=export_id,
+                batch_hash=batch_hash,
+                fmt=fmt,
+                request_by=request_by,
+                requester_name=getattr(requester, "name", None) if requester else None,
+                requester_email=getattr(requester, "email", None) if requester else None,
+                total_written=total_written,
+                digital_signature=sig_b64,
+                kms_signature_id=kms_sig_id,
+                signing_key_id=key_id,
+                exported_at=package_at,
+            )
+            file_bytes = final_path.read_bytes()
         else:
             logger.warning("Export %s: sin clave KMS activa; firma omitida", export_id)
 
         finished = datetime.now(timezone.utc)
-        ext = str(out_path.suffix).lstrip(".").lower() or fmt.lower()
+        ext = str(final_path.suffix).lstrip(".").lower() or fmt.lower()
         download_filename = (
             f"AgroFusion_Auditoria_{finished.strftime('%Y%m%d_%H%M%S')}_"
             f"{total_written}reg.{ext}"
@@ -210,9 +308,9 @@ def _run_export_body(job: dict) -> None:
         er.save_completed(
             db,
             export_id,
-            file_path=str(out_path),
+            file_path=str(final_path),
             file_size_bytes=len(file_bytes),
-            file_hash=file_hash,
+            file_hash=batch_hash,
             digital_signature=sig_b64,
             kms_signature_id=kms_sig_id,
             record_count=total_written,
@@ -230,53 +328,40 @@ def _run_export_body(job: dict) -> None:
             actor_id=request_by,
             metadata={
                 "export_request_id": str(export_id),
+                "format": fmt,
+                "export_name": job.get("export_name"),
+                "filters_summary": _filters_summary(f),
                 "file_size": len(file_bytes),
                 "actual_records": total_written,
-                "file_hash": file_hash,
+                "file_hash": batch_hash,
+                "batch_hash": batch_hash,
+                "signed_package": key_id is not None,
                 "execution_time_seconds": round(elapsed, 3),
             },
         )
 
-        user = db.query(Users).filter(Users.user_id == request_by).first()
-        if user and user.email:
-            token = create_export_download_token(
-                export_id=export_id,
-                user_id=request_by,
-                project_id=primary,
-                ttl_minutes=settings.export_download_ttl_minutes,
-            )
-            pub = (settings.audit_api_public_url or "").strip().rstrip("/")
-            from urllib.parse import urlencode
-
-            link = (
-                f"{pub}/audit/exports/{export_id}/download?{urlencode({'token': token})}"
-                if pub
-                else ""
-            )
-            expires = (
-                datetime.now(timezone.utc)
-                + timedelta(minutes=settings.export_download_ttl_minutes)
-            ).isoformat()
-            EmailRepository().send_export_ready_notification(
-                db,
-                user=user,
-                export_name=job.get("export_name") or "Auditoría",
-                export_format=fmt,
-                record_count=total_written,
-                download_url=link or None,
-                download_token=token,
-                file_hash=file_hash,
-                expires_at_iso=expires,
-            )
+        # Notificación por correo deshabilitada temporalmente; la descarga sigue
+        # disponible vía GET /audit/exports y token en la respuesta de la API.
 
     except Exception as exc:
-        logger.exception("Export %s failed", export_id)
+        err_text = _format_export_error(exc)
+        if isinstance(exc, HTTPException):
+            logger.warning("Export %s failed: %s", export_id, err_text)
+        else:
+            logger.exception("Export %s failed", export_id)
         primary_pid = UUID(job["primary_project_id"])
         try:
             db.rollback()
         except Exception:
             pass
         row = er.get_by_id(db, export_id)
+        if row and row.status == "COMPLETED":
+            logger.warning(
+                "Export %s: error tras completar el archivo (no se marca fallo): %s",
+                export_id,
+                err_text,
+            )
+            return
         if row and row.filters_json is not None:
             retries = int(row.filters_json.get("_retry_count", 0) or 0) + 1
         else:
@@ -284,27 +369,32 @@ def _run_export_body(job: dict) -> None:
         requeue = retries < 3
         backoff = 2**retries if requeue else 0
 
-        try:
-            ar.log_event_optional_term(
-                db,
-                action_code="EXPORT_FAILED",
-                outcome="error",
-                module_code="AUDIT_EXPORT",
-                project_id=primary_pid,
-                actor_id=request_by,
-                metadata={
-                    "export_request_id": str(export_id),
-                    "error_message": str(exc),
-                    "retry_count": retries,
-                },
-            )
-        except Exception:
-            logger.exception("Could not log EXPORT_FAILED")
+        if not requeue:
+            f_fail = query_filters_for_worker(job.get("filters") or {})
+            try:
+                ar.log_event_optional_term(
+                    db,
+                    action_code="EXPORT_FAILED",
+                    outcome="error",
+                    module_code="AUDIT_EXPORT",
+                    project_id=primary_pid,
+                    actor_id=request_by,
+                    metadata={
+                        "export_request_id": str(export_id),
+                        "format": job.get("format"),
+                        "export_name": job.get("export_name"),
+                        "filters_summary": _filters_summary(f_fail),
+                        "error_message": err_text,
+                        "retry_count": retries,
+                    },
+                )
+            except Exception:
+                logger.exception("Could not log EXPORT_FAILED")
 
         er.save_failed_retry(
             db,
             export_id,
-            error_message=str(exc),
+            error_message=err_text,
             retry_count=retries,
             requeue_pending=requeue,
             backoff_seconds=backoff,
@@ -343,22 +433,8 @@ def _process_one_export_id(export_id: UUID) -> None:
     if not cur:
         return
 
-    db = SessionLocal()
-    try:
-        AuditRepository().log_event_optional_term(
-            db,
-            action_code="EXPORT_STARTED",
-            outcome="success",
-            module_code="AUDIT_EXPORT",
-            project_id=UUID(cur["primary_project_id"]),
-            actor_id=UUID(cur["request_by"]),
-            metadata={"export_request_id": str(export_id)},
-        )
-    except Exception:
-        pass
-    finally:
-        db.close()
-
+    # No se registra EXPORT_STARTED: cada paso añadía filas a la misma hora; el flujo
+    # queda cubierto con EXPORT_REQUESTED (API) + EXPORT_COMPLETED/EXPORT_FAILED (worker).
     _run_export_body(cur)
 
 
