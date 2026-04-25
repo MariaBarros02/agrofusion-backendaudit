@@ -1,4 +1,4 @@
-name: Construir y Subir Imagen a GHCR
+name: Construir, Escanear y Subir Imagen
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - main
 
 jobs:
-  build-and-push:
+  build-scan-and-push:
     runs-on: ubuntu-latest
     
     permissions:
@@ -24,9 +24,61 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Construir y subir imagen Docker
+      # NUEVO: Preparamos el motor de Docker
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      # PASO 0: Generar un ID único basado en el commit para versionar la imagen
+      - name: 0. Generar etiqueta única de versión (Short SHA)
+        run: echo "SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_ENV
+
+      # PASO 1: Construimos la imagen pero la dejamos en revisión (load: true)
+      - name: 1. Construir imagen localmente (Para escanear)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true 
+          tags: local-image:test, ghcr.io/mariabarros02/agrofusion-audit:dev-${{ env.SHORT_SHA }}
+
+      # PASO 2: Trivy busca errores Altos y nos da una advertencia visual
+      - name: 2. Escaneo Trivy (Nivel HIGH - Advertencia)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'local-image:test'
+          format: 'table'
+          exit-code: '0'
+          severity: 'HIGH'
+
+      # PASO 3: Trivy escribe todo lo que encontró en un archivo llamado trivy-report.json
+      - name: 3. Escaneo Trivy (Generar Reporte)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'local-image:test'
+          format: 'json'
+          output: 'trivy-report.json'
+          exit-code: '0'
+
+      # PASO 4: El robot toma el archivo JSON y te lo deja descargable en la página de GitHub
+      - name: 4. Subir reporte como artefacto a GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-seguridad-trivy
+          path: trivy-report.json
+
+      # PASO 5: Trivy busca errores FATALES. Si encuentra uno, destruye el proceso (exit-code: 1)
+      - name: 5. Escaneo Trivy (Nivel CRITICAL - Bloquea si hay error)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'local-image:test'
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL'
+
+      # PASO 6: Si Trivy no encontro nada, se sube la imagen a la nube oficialmente
+      - name: 6. Subir imagen a GHCR (Solo si pasó la seguridad)
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ghcr.io/mariabarros02/agrofusion-backendaudit:latest
+          # IMPORTANTE: Aquí arreglamos también el nombre y la etiqueta de la Tarea 2 para que quede perfecto
+          tags: ghcr.io/mariabarros02/agrofusion-audit:dev-${{ env.SHORT_SHA }}

@@ -49,3 +49,8 @@ Thumbs.db
 # Docker
 # =========================
 docker-compose.override.yml
+
+# =========================
+# Exportaciones de auditoría (binarios generados en runtime; no subir al repo)
+# =========================
+data/exports/
