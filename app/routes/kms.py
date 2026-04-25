@@ -399,9 +399,6 @@ def create_key(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        print(f"Error creating key: {str(e)}")
-        print(traceback.format_exc())
         raise audit_error("KEY_CREATION_FAILED", status.HTTP_500_INTERNAL_SERVER_ERROR, {"error": str(e)})
 
 
