@@ -105,6 +105,8 @@ def _build_signed_export_zip(
     Comprime el archivo de datos y un manifest.json (batch_hash, metadatos, firma)
     en un ZIP, elimina el archivo de datos suelto y devuelve la ruta del .zip.
     """
+    data_arcname = f"records{data_path.suffix}"
+    manifest_basename = "manifest.json"
     manifest: dict = {
         "schema_version": 1,
         "document_type": "SIGNED_AUDIT_EXPORT",
@@ -114,6 +116,11 @@ def _build_signed_export_zip(
         "exported_at": exported_at.isoformat(),
         "export_format": fmt,
         "record_count": total_written,
+        "package": {
+            "data_file": data_arcname,
+            "manifest_file": manifest_basename,
+            "hash_targets": f"batch_hash = SHA-256 (hex) of the raw {data_arcname} bytes (verify on extracted file).",
+        },
         "requested_by": {
             "user_id": str(request_by),
             "name": requester_name,
@@ -133,10 +140,9 @@ def _build_signed_export_zip(
     zip_path = data_path.parent / f"{export_id}.zip"
     if zip_path.exists():
         zip_path.unlink()
-    data_arcname = f"records{data_path.suffix}"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(data_path, arcname=data_arcname)
-        zf.write(manifest_path, arcname="manifest.json")
+        zf.write(manifest_path, arcname=manifest_basename)
     try:
         data_path.unlink()
     except OSError:
