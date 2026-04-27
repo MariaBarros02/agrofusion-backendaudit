@@ -6,7 +6,8 @@ claves criptográficas, certificados, firmas y rotaciones.
 """
 
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, or_, func, cast, String
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
@@ -347,7 +348,11 @@ class KmsRepository:
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
         signer_user_id: Optional[UUID] = None,
+        signer_name: Optional[str] = None,
+        search_q: Optional[str] = None,
         document_type: Optional[str] = None,
+        audit_export_only: bool = False,
+        key_algorithm: Optional[str] = None,
         validation_status: Optional[str] = None,
         limit: int = 5,
         offset: int = 0,
@@ -355,10 +360,11 @@ class KmsRepository:
         """
         Búsqueda paginada de firmas para RF-INT-19.
 
-        Devuelve una lista de tuplas (AfKmsSignature, validation_status,
-        expires_at, signer_name) y el total de registros coincidentes.
+        Devuelve tuplas (AfKmsSignature, validation_status, expires_at,
+        signer_name, key_algorithm, export_name) y el total.
         """
         from app.models.users import Users as _Users  # import tardío para evitar ciclos
+        from app.models.af_audit_exports import AfAuditExport
 
         latest_val = self._latest_validation_subquery(db)
 
@@ -368,6 +374,8 @@ class KmsRepository:
                 latest_val.c.validation_result.label("validation_status"),
                 AfKmsCertificate.valid_to.label("expires_at"),
                 _Users.name.label("signer_name"),
+                AfKmsKey.algorithm.label("key_algorithm"),
+                AfAuditExport.export_name.label("export_name"),
             )
             .outerjoin(
                 latest_val,
@@ -381,6 +389,12 @@ class KmsRepository:
                 AfKmsCertificate.certificate_id == AfKmsSignature.certificate_id,
             )
             .outerjoin(_Users, _Users.user_id == AfKmsSignature.signer_user_id)
+            .outerjoin(AfKmsKey, AfKmsKey.key_id == AfKmsSignature.key_id)
+            .outerjoin(
+                AfAuditExport,
+                AfAuditExport.export_id
+                == cast(AfKmsSignature.document_id, PGUUID(as_uuid=True)),
+            )
         )
 
         if date_from:
@@ -389,8 +403,26 @@ class KmsRepository:
             base = base.filter(AfKmsSignature.signed_at <= date_to)
         if signer_user_id:
             base = base.filter(AfKmsSignature.signer_user_id == signer_user_id)
-        if document_type:
+        if signer_name and signer_name.strip():
+            base = base.filter(_Users.name.ilike(f"%{signer_name.strip()}%"))
+        if search_q and search_q.strip():
+            t = f"%{search_q.strip()}%"
+            base = base.filter(
+                or_(
+                    cast(AfKmsSignature.signature_id, String).ilike(t),
+                    cast(AfKmsSignature.document_id, String).ilike(t),
+                    AfKmsSignature.document_hash.ilike(t),
+                    AfAuditExport.export_name.ilike(t),
+                )
+            )
+        if audit_export_only:
+            base = base.filter(AfKmsSignature.document_type == "AUDIT_EXPORT")
+        elif document_type:
             base = base.filter(AfKmsSignature.document_type == document_type)
+        if key_algorithm and key_algorithm.strip():
+            base = base.filter(
+                cast(AfKmsKey.algorithm, String).ilike(f"%{key_algorithm.strip()}%")
+            )
         if validation_status:
             base = base.filter(
                 func.lower(latest_val.c.validation_result)

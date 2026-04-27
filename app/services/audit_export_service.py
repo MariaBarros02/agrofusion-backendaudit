@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import uuid
 from uuid import UUID
 
-from fastapi import Request, status
+from fastapi import status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -65,7 +65,6 @@ def _filters_summary(filters: Dict[str, Any]) -> str:
 def create_audit_export_job(
     db: Session,
     *,
-    request: Request,
     current_user: dict,
     body: CreateAuditExportRequest,
 ) -> AuditExportJobResponse:
@@ -108,33 +107,10 @@ def create_audit_export_job(
         priority=body.priority.value,
         export_name=body.export_name,
     )
+    # Persistir el job: sin commit la sesión hace rollback al cerrar y GET /exports/{id} devuelve 404.
+    db.commit()
 
-    session = current_user.get("session")
-    ip = None
-    try:
-        from app.dependencies.auth import get_client_ip
-
-        ip = get_client_ip(request)
-    except Exception:
-        pass
-
-    repo.log_event_optional_term(
-        db,
-        action_code="EXPORT_REQUESTED",
-        outcome="success",
-        module_code="AUDIT_EXPORT",
-        project_id=primary_project,
-        actor_id=user_id,
-        session_id=session.sso_session_id if session else None,
-        ip=ip,
-        user_agent=request.headers.get("user-agent"),
-        metadata={
-            "format": body.format.value,
-            "filters_summary": _filters_summary(filters_json),
-            "priority": body.priority.value,
-            "export_id": str(export_id),
-        },
-    )
+    # Un solo registro de auditoría por export: EXPORT_COMPLETED o EXPORT_FAILED (worker).
 
     row = er.get_by_id(db, export_id)
     job = audit_export_to_job_dict(row) if row else {}

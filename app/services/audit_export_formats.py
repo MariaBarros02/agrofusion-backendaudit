@@ -2,8 +2,8 @@
 Escritores de formatos para exportación de auditoría (streaming por lotes).
 
 Columnas alineadas a RF: ID evento, origen y resultado internacionalizados,
-fecha localizada, acción (CatTerm.label), usuario; en CSV/XLSX/JSONL además
-target_json, diff_json, IP y dispositivo. Excel: ancho fijo + ajuste de texto (wrap).
+fecha localizada, acción (CatTerm.label), usuario; en CSV/XLSX/JSONL (mismas columnas
+y orden) además target_json, diff_json, IP y dispositivo. Excel: ancho fijo + wrap.
 """
 
 from __future__ import annotations
@@ -265,15 +265,25 @@ class CsvExportWriter:
 
 
 class JsonlExportWriter:
-    def __init__(self, path: Path) -> None:
+    """
+    Mismas columnas y orden que CSV/XLSX: una línea JSON por registro, claves = ``fields``.
+    (Sin sort_keys, para alinear con Excel y con el encabezado del CSV.)
+    """
+
+    def __init__(self, path: Path, fields: List[str]) -> None:
         self.path = path
+        self.fields = list(fields)
         self._f = open(path, "w", encoding="utf-8")
 
     def write_rows(self, rows: Iterable[Dict[str, Any]]) -> None:
         for r in rows:
-            self._f.write(
-                json.dumps(r, ensure_ascii=False, default=str, sort_keys=True) + "\n"
-            )
+            line: Dict[str, Any] = {}
+            for k in self.fields:
+                v = r.get(k)
+                line[k] = (
+                    _serialize_json_value(v) if isinstance(v, (dict, list)) else v
+                )
+            self._f.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
 
     def close(self) -> None:
         self._f.close()
