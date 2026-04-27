@@ -464,6 +464,14 @@ class SignatureQueryItem(BaseModel):
     )
     signed_at: datetime
     document_id: Optional[UUID]
+    key_algorithm: Optional[str] = Field(
+        None,
+        description="Algoritmo de la clave asociada (af_kms_keys.algorithm)",
+    )
+    export_name: Optional[str] = Field(
+        None,
+        description="Nombre de la exportación (af_audit_exports) cuando document_id es export_id",
+    )
 
 
 class SignatureQueryResponse(BaseModel):
@@ -471,7 +479,7 @@ class SignatureQueryResponse(BaseModel):
 
     items: List[SignatureQueryItem]
     total_count: int = Field(..., description="Total de firmas que coinciden con los filtros")
-    limit: int = Field(..., description="Límite fijo de 5 registros por página")
+    limit: int = Field(..., description="Tamaño de página (registros por solicitud)")
     offset: int = Field(..., description="Offset aplicado a la consulta")
 
 

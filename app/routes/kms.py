@@ -46,7 +46,8 @@ from app.models.users import Users
 from app.models.af_kms_signatures import HashAlgorithm
 from app.models.af_kms_signature_validations import AfKmsSignatureValidation
 from app.models.af_audit_log import AuditLog
-from sqlalchemy import func, or_, String
+from sqlalchemy import cast, func, or_, String
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from datetime import datetime
 from app.core.errors import audit_error
 from app.dependencies.auth import get_current_user_id, get_current_user
@@ -1379,10 +1380,10 @@ def validate_signature_presentable(
     response_model=SignatureQueryResponse,
     summary="Consultar firmas digitales (RF-INT-19)",
     description=(
-        "Listado paginado (máximo 5 registros por página) de firmas digitales "
-        "con filtros por rango de fechas, usuario firmante, tipo de documento "
-        "y estado de validación. No expone el valor de la firma digital ni el "
-        "contenido del certificado."
+        "Listado paginado de firmas digitales (af_kms_signatures) con filtros. "
+        "Incluye opción `audit_export_only` para lotes de exportación de auditoría "
+        "firmados (document_type=AUDIT_EXPORT). No expone el valor de la firma "
+        "digital ni el contenido del certificado."
     ),
     responses={**_auth_responses("028")},
 )
@@ -1394,15 +1395,30 @@ def query_signatures_rfint19(
         None, description="Fecha máxima de firma (signed_at <=)"
     ),
     signer_user_id: Optional[UUID] = Query(
-        None, description="Identificador del usuario firmante"
+        None, description="Identificador del usuario firmante (UUID exacto)"
+    ),
+    signer_name: Optional[str] = Query(
+        None, description="Búsqueda por nombre de usuario (users.name, subcadena)"
+    ),
+    q: Optional[str] = Query(
+        None,
+        description="Texto en ID de firma, documento, hash o nombre de exportación",
+    ),
+    key_algorithm: Optional[str] = Query(
+        None, description="Subcadena del algoritmo de clave (ej. RSA, ECDSA)",
     ),
     document_type: Optional[str] = Query(
-        None, description="Tipo de documento firmado"
+        None, description="Tipo de documento firmado (omitir si audit_export_only=true)"
+    ),
+    audit_export_only: bool = Query(
+        False,
+        description="Solo firmas de exportación de auditoría (AUDIT_EXPORT)",
     ),
     validation_status: Optional[str] = Query(
         None,
         description="Estado: valid | invalid | expired | revoked | unknown",
     ),
+    limit: int = Query(10, ge=1, le=100, description="Tamaño de página"),
     offset: int = Query(0, ge=0, description="Registros a saltar (paginación)"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
@@ -1432,9 +1448,13 @@ def query_signatures_rfint19(
         date_from=date_from,
         date_to=date_to,
         signer_user_id=signer_user_id,
+        signer_name=signer_name,
+        search_q=q,
         document_type=document_type,
+        audit_export_only=audit_export_only,
+        key_algorithm=key_algorithm,
         validation_status=validation_status,
-        limit=5,
+        limit=limit,
         offset=offset,
     )
 
@@ -1442,7 +1462,7 @@ def query_signatures_rfint19(
     return SignatureQueryResponse(
         items=items,
         total_count=total,
-        limit=5,
+        limit=limit,
         offset=offset,
     )
 
@@ -2063,8 +2083,22 @@ _VALIDATION_STATUS_ALLOWED = {"valid", "invalid", "expired", "revoked", "unknown
 
 def _signature_row_to_query_item(row) -> SignatureQueryItem:
     """Mapea una fila de la búsqueda RF-INT-19 al schema público."""
-    sig, validation_status, expires_at, signer_name = row
+    (
+        sig,
+        validation_status,
+        expires_at,
+        signer_name,
+        key_algorithm,
+        export_name,
+    ) = row
     status_value = (validation_status or "unknown").lower()
+    key_alg = None
+    if key_algorithm is not None:
+        key_alg = (
+            key_algorithm.value
+            if hasattr(key_algorithm, "value")
+            else str(key_algorithm)
+        )
     return SignatureQueryItem(
         signature_id=sig.signature_id,
         validation_status=status_value,
@@ -2075,6 +2109,8 @@ def _signature_row_to_query_item(row) -> SignatureQueryItem:
         signer_name=signer_name,
         signed_at=sig.signed_at,
         document_id=sig.document_id,
+        key_algorithm=key_alg,
+        export_name=export_name,
     )
 
 
@@ -2131,6 +2167,30 @@ def signature_detail_rfint19(
         if user:
             signer_name = user.name
 
+    key_alg_s = None
+    if sig.key_id:
+        from app.models.af_kms_keys import AfKmsKey as _K
+
+        krow = db.query(_K).filter(_K.key_id == sig.key_id).first()
+        if krow and krow.algorithm is not None:
+            key_alg_s = (
+                krow.algorithm.value
+                if hasattr(krow.algorithm, "value")
+                else str(krow.algorithm)
+            )
+
+    export_name = None
+    if sig.document_id:
+        from app.models.af_audit_exports import AfAuditExport as _E
+
+        erow = (
+            db.query(_E)
+            .filter(_E.export_id == cast(sig.document_id, PGUUID(as_uuid=True)))
+            .first()
+        )
+        if erow:
+            export_name = erow.export_name
+
     return SignatureQueryDetail(
         signature_id=sig.signature_id,
         validation_status=validation_status,
@@ -2141,6 +2201,8 @@ def signature_detail_rfint19(
         signer_name=signer_name,
         signed_at=sig.signed_at,
         document_id=sig.document_id,
+        key_algorithm=key_alg_s,
+        export_name=export_name,
         document_hash=sig.document_hash,
         hash_algorithm=sig.hash_algorithm,
         signing_reason=sig.signing_reason,
