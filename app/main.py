@@ -99,6 +99,7 @@ app = FastAPI(
 # Orígenes permitidos para solicitudes CORS (frontend)
 origins = [
     "https://inmero.co/agrofusionTest",
+    "https://www.inmero.co/agrofusionTest",
     "https://inmero.co",
     "https://www.inmero.co"
     "http://localhost:5173",
