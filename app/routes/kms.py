@@ -1311,14 +1311,17 @@ def validate_signature_presentable(
         db, signature_record.signer_user_id if signature_record else None
     )
 
-    result_code = (
+    # ValidationResult guarda valores en minúsculas ("invalid", "valid", …);
+    # los textos UI usan claves en MAYÚSCULAS.
+    result_raw = (
         validation.validation_result.value
         if hasattr(validation.validation_result, "value")
         else str(validation.validation_result)
     )
-    estado = _VALIDATION_ESTADO_MAP.get(result_code, result_code.title())
+    result_norm = str(result_raw).strip().upper()
+    estado = _VALIDATION_ESTADO_MAP.get(result_norm, str(result_raw).title())
     resultado_general = _VALIDATION_DESCRIPCION_MAP.get(
-        result_code,
+        result_norm,
         "El sistema no pudo determinar de forma concluyente el estado de la firma.",
     )
 
@@ -1352,7 +1355,7 @@ def validate_signature_presentable(
             "target_id": str(signature_id),
             "validation_id": str(validation.validation_id),
             "signature_id": str(signature_id),
-            "validation_result": result_code,
+            "validation_result": result_norm,
             "estado_presentado": estado,
             "presentation_layer": True,
         },
