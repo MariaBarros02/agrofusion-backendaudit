@@ -93,6 +93,13 @@ class CreateAuditExportRequest(BaseModel):
     include_sensitive: bool = False
 
 
+class AuditExportSigningReadinessResponse(BaseModel):
+    """Estado de KMS requerido para firmar exportaciones de auditoría."""
+
+    ready: bool
+    reason_code: Optional[str] = None
+
+
 class AuditExportJobResponse(BaseModel):
     export_id: str
     status: str

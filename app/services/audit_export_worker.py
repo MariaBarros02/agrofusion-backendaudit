@@ -28,8 +28,7 @@ from app.repositories.audit_export_repository import (
     audit_export_to_job_dict,
     query_filters_for_worker,
 )
-from app.repositories.kms_repository import KmsRepository
-from app.models.af_kms_keys import KeyPurpose
+from app.services.audit_export_signing import resolve_signing_key_for_export
 from app.models.af_kms_signatures import HashAlgorithm, SignatureFormat
 from app.services.audit_export_formats import (
     EXPORT_FIELDS_PDF,
@@ -72,41 +71,6 @@ def _format_export_error(exc: BaseException) -> str:
         return f"HTTPException(status_code={exc.status_code})"
     s = str(exc)
     return s if s.strip() else repr(exc)
-
-
-def _resolve_signing_key_id(db, project_id: UUID) -> UUID | None:
-    """Elige la clave signing activa del proyecto desde BD (sin overrides por env)."""
-    kr = KmsRepository()
-    keys = kr.get_active_keys_by_project(db, project_id, KeyPurpose.SIGNING)
-    if not keys:
-        keys = kr.get_active_keys_by_project(db, project_id, KeyPurpose.BOTH)
-    if not keys:
-        return None
-    ordered = sorted(keys, key=lambda k: k.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    return ordered[0].key_id
-
-
-def _resolve_signing_key_for_export(db, primary_project_id: UUID) -> tuple[UUID | None, UUID | None]:
-    """
-    Devuelve (key_id, project_id para KMS) intentando primero el proyecto del export;
-    si no hay claves ahí (roles ≠ proyecto donde viven las llaves), usa cualquier
-    clave signing/both activa en BD — mismo patrón que antes del refactor por código de proyecto.
-    """
-    kr = KmsRepository()
-    kid = _resolve_signing_key_id(db, primary_project_id)
-    if kid:
-        row = kr.get_key_by_id(db, kid)
-        return kid, (row.project_id if row else primary_project_id)
-    fb = kr.get_latest_active_signing_key_any_project(db)
-    if fb:
-        logger.warning(
-            "Export sin clave KMS en proyecto %s; usando clave activa del proyecto %s (key_id=%s)",
-            primary_project_id,
-            fb.project_id,
-            fb.key_id,
-        )
-        return fb.key_id, fb.project_id
-    return None, None
 
 
 def _build_signed_export_zip(
@@ -355,7 +319,7 @@ def _run_export_body(job: dict) -> None:
             data_bytes = data_path.read_bytes()
             batch_hash = hashlib.sha256(data_bytes).hexdigest()
 
-            key_id, kms_project_id = _resolve_signing_key_for_export(db, primary)
+            key_id, kms_project_id = resolve_signing_key_for_export(db, primary)
             sig_b64 = None
             kms_sig_id = None
             final_path = data_path
