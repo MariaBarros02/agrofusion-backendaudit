@@ -319,17 +319,8 @@ class KmsService:
         if not key:
             raise audit_error("KEY_NOT_FOUND", status.HTTP_404_NOT_FOUND)
 
-        # Usar siempre el proyecto AGROFUSION por defecto si no se especifica.
-        # No dependemos de un UUID hardcodeado para evitar acoplamiento a datos.
-        default_project_id = self.get_agrofusion_project(db).af_project_id
-
         if not project_id:
-            project_id = default_project_id
-        else:
-            # Si se pasa un project_id distinto al de la clave, no bloqueamos,
-            # pero podríamos validarlo en el futuro si la BD lo requiere.
-            # Por ahora solo aseguramos que exista algún project_id válido.
-            pass
+            project_id = key.project_id
 
         # Validar que la clave esté activa
         if key.status != KeyStatus.ACTIVE:

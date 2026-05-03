@@ -119,6 +119,26 @@ class KmsRepository:
             query = query.filter(AfKmsKey.key_purpose.in_([key_purpose, KeyPurpose.BOTH]))
         return query.all()
 
+    def get_latest_active_signing_key_any_project(
+        self, db: Session
+    ) -> Optional[AfKmsKey]:
+        """
+        Último recurso (p. ej. usuario sin filas en af_user_project_roles):
+        una clave signing/both activa y vigente, la más reciente por created_at.
+        """
+        return (
+            db.query(AfKmsKey)
+            .filter(
+                and_(
+                    AfKmsKey.status == KeyStatus.ACTIVE,
+                    AfKmsKey.valid_to > func.now(),
+                    AfKmsKey.key_purpose.in_([KeyPurpose.SIGNING, KeyPurpose.BOTH]),
+                )
+            )
+            .order_by(AfKmsKey.created_at.desc())
+            .first()
+        )
+
     def get_keys_by_project(
         self, db: Session, project_id: UUID, status: Optional[KeyStatus] = None
     ) -> List[AfKmsKey]:
