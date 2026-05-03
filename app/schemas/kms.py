@@ -24,7 +24,7 @@ class KeyCreateRequest(BaseModel):
     
     project_id: Optional[UUID] = Field(
         None,
-        description="Reservado: por ahora el backend ignora este campo y asocia la clave al proyecto AGROFUSION.",
+        description="Proyecto al que se asocia la clave. Si se omite, se usa el proyecto interno AGROFUSION. Si se envía, debe existir en `af_projects`.",
     )
     key_alias: str = Field(..., min_length=1, max_length=255, description="Alias amigable de la clave")
     algorithm: str = Field(

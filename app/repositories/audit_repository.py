@@ -366,6 +366,18 @@ class AuditRepository:
             .first()
         )
 
+    def get_project_by_id(self, db: Session, *, project_id: UUID):
+        """
+        Obtiene un proyecto por su UUID (af_project_id).
+
+        :return: Instancia de Project o None
+        """
+        return (
+            db.query(Project)
+            .filter(Project.af_project_id == project_id)
+            .first()
+        )
+
     
     def get_action_term_audit(self, db: Session, *, action_code: str) -> str:
         """

@@ -300,6 +300,19 @@ def _log_kms_event(
                 }
             },
         },
+        404: {
+            "description": "Proyecto no encontrado (project_id inexistente en el body)",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "project_not_found": {
+                            "summary": "Proyecto inexistente",
+                            "value": {"detail": "Proyecto no encontrado"},
+                        }
+                    }
+                }
+            },
+        },
         500: {
             "description": "Error inesperado al crear la clave",
             "content": {
@@ -327,7 +340,9 @@ def create_key(
 
     Requiere permisos de administrador (KMS_ADMIN o AUDIT_SECURITY).
     La clave privada se almacena de forma segura en el KMS.
-    Por ahora la clave se asocia siempre al proyecto interno AGROFUSION (el backend ignora `project_id` en el body).
+    Si el body incluye ``project_id``, debe corresponder a un proyecto existente;
+    si no, se responde 404 con el mensaje ``Proyecto no encontrado``.
+    Si se omite ``project_id``, la clave se asocia al proyecto interno AGROFUSION.
     """
 
     
@@ -341,8 +356,15 @@ def create_key(
         audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
 
     service = KmsService()
-    try:
+    if request.project_id is not None:
+        project = service.audit_repo.get_project_by_id(db, project_id=request.project_id)
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
+        project_id = project.af_project_id
+    else:
         project_id = service.get_agrofusion_project(db).af_project_id
+
+    try:
 
         key = service.create_key(
             db=db,
