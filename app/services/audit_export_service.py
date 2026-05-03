@@ -22,7 +22,11 @@ from app.repositories.audit_export_repository import (
     audit_export_to_job_dict,
 )
 from app.repositories.kms_repository import KmsRepository
-from app.schemas.audit import AuditExportJobResponse, CreateAuditExportRequest
+from app.schemas.audit import (
+    AuditExportJobResponse,
+    AuditExportSigningReadinessResponse,
+    CreateAuditExportRequest,
+)
 from app.services.permissions_service import PermissionsService
 
 
@@ -84,6 +88,59 @@ def _filters_summary(filters: Dict[str, Any]) -> str:
     if filters.get("action_codes"):
         parts.append("actions")
     return ",".join(parts) if parts else "none"
+
+
+def get_audit_export_signing_readiness(
+    db: Session, user_id: UUID
+) -> AuditExportSigningReadinessResponse:
+    """
+    Comprueba si el tenant puede firmar exports (clave signing activa, material cifrado,
+    certificado ACTIVE), usando la misma resolución de proyecto/clave que el worker.
+    """
+    from app.services.audit_export_signing import resolve_signing_key_for_export
+
+    ar = AuditRepository()
+    kr = KmsRepository()
+    visible = ar.get_user_visible_project_ids(db, user_id)
+
+    primary: UUID | None = None
+    for pid in visible:
+        keys = kr.get_active_keys_by_project(db, pid, KeyPurpose.SIGNING)
+        if not keys:
+            keys = kr.get_active_keys_by_project(db, pid, KeyPurpose.BOTH)
+        if keys:
+            primary = pid
+            break
+    if primary is None and visible:
+        primary = visible[0]
+    elif primary is None:
+        fb0 = kr.get_latest_active_signing_key_any_project(db)
+        primary = fb0.project_id if fb0 else None
+
+    if primary is None:
+        return AuditExportSigningReadinessResponse(
+            ready=False, reason_code="NO_PROJECT_CONTEXT"
+        )
+
+    key_id, _ = resolve_signing_key_for_export(db, primary, log_fallback=False)
+    if not key_id:
+        return AuditExportSigningReadinessResponse(
+            ready=False, reason_code="NO_ACTIVE_SIGNING_KEY"
+        )
+
+    key_row = kr.get_key_by_id(db, key_id)
+    if not key_row or not (key_row.private_key_encrypted or "").strip():
+        return AuditExportSigningReadinessResponse(
+            ready=False, reason_code="NO_ENCRYPTED_PRIVATE_KEY"
+        )
+
+    cert = kr.get_active_certificate_by_key_id(db, key_id)
+    if not cert:
+        return AuditExportSigningReadinessResponse(
+            ready=False, reason_code="NO_ACTIVE_CERTIFICATE"
+        )
+
+    return AuditExportSigningReadinessResponse(ready=True, reason_code=None)
 
 
 def create_audit_export_job(

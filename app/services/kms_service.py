@@ -776,7 +776,7 @@ class KmsService:
 
         # Reconstruimos el mensaje firmado (mismo criterio que al firmar).
         try:
-            signed_data = bytes.fromhex(document_hash_hex)
+            digest_bytes = bytes.fromhex(document_hash_hex)
         except ValueError:
             return False, "document_hash no está en hexadecimal"
 
@@ -789,11 +789,11 @@ class KmsService:
 
         try:
             content_info, _ = asn1_decode(cms_der)
-            # ContentInfo → SEQUENCE { OID, content [0] EXPLICIT } — pyasn1
-            # devuelve directamente la SignedData ya decodificada en [1].
-            signed_data = content_info.getComponentByPosition(1)
-            # signerInfos es el último componente de SignedData.
-            signer_infos = signed_data.getComponentByPosition(len(signed_data) - 1)
+            # ContentInfo → SEQUENCE { OID, content [0] EXPLICIT }
+            signed_data_asn1 = content_info.getComponentByPosition(1)
+            signer_infos = signed_data_asn1.getComponentByPosition(
+                len(signed_data_asn1) - 1
+            )
             signer_info = signer_infos.getComponentByPosition(0)
 
             signature_bytes = None
@@ -819,9 +819,18 @@ class KmsService:
 
         try:
             if algorithm in (KeyAlgorithm.RSA_2048, KeyAlgorithm.RSA_4096):
-                public_key.verify(signature_bytes, signed_data, padding.PKCS1v15(), hash_obj)
+                public_key.verify(
+                    signature_bytes,
+                    digest_bytes,
+                    padding.PKCS1v15(),
+                    hash_obj,
+                )
             elif algorithm in (KeyAlgorithm.ECDSA_P256, KeyAlgorithm.ECDSA_P384):
-                public_key.verify(signature_bytes, signed_data, ec.ECDSA(hash_obj))
+                public_key.verify(
+                    signature_bytes,
+                    digest_bytes,
+                    ec.ECDSA(hash_obj),
+                )
             else:
                 return False, f"Algoritmo de clave no soportado: {algorithm}"
         except InvalidSignature:

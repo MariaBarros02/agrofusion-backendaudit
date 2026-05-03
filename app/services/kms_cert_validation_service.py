@@ -293,22 +293,10 @@ class CertificateValidationService:
                 fingerprint_ok=False,
             )
 
-        # 5. Firma de la Root CA (ancla de confianza).
-        ca_signature_ok = self._verify_ca_signature(x509_cert, ca.public_key)
-        if not ca_signature_ok:
-            return self._fail(
-                state=CertValidationState.INVALID,
-                reason="Certificate signature not issued by internal Root CA",
-                certificate_id=cert.certificate_id,
-                key_id=cert.key_id,
-                validation_mode=mode,
-                reference_date=ref_date,
-                now_utc=now_utc,
-                fingerprint_ok=True,
-                ca_signature_ok=False,
-            )
-
-        # 6. Período de vigencia respecto a la fecha de referencia.
+        # 5. Vigencia y estado lógico respecto a reference_date / ref (RF-INT-15).
+        #    Se evalúa antes que la firma de la CA para que revoked / expired
+        #    no queden ocultos detrás de resultados "invalid" en escenarios de QA
+        #    (p. ej. API-INT-15-02 / 03) y para coherencia de negocio.
         valid_from = self._as_utc(cert.valid_from)
         valid_to = self._as_utc(cert.valid_to)
         if valid_from is None or valid_to is None:
@@ -321,37 +309,10 @@ class CertificateValidationService:
                 reference_date=ref_date,
                 now_utc=now_utc,
                 fingerprint_ok=True,
-                ca_signature_ok=True,
-            )
-
-        if ref_date < valid_from:
-            return self._fail(
-                state=CertValidationState.INVALID,
-                reason="Certificate not yet valid at reference_date",
-                certificate_id=cert.certificate_id,
-                key_id=cert.key_id,
-                validation_mode=mode,
-                reference_date=ref_date,
-                now_utc=now_utc,
-                fingerprint_ok=True,
-                ca_signature_ok=True,
-            )
-
-        if ref_date > valid_to:
-            return self._fail(
-                state=CertValidationState.EXPIRED,
-                reason="Certificate expired at reference_date",
-                certificate_id=cert.certificate_id,
-                key_id=cert.key_id,
-                validation_mode=mode,
-                reference_date=ref_date,
-                now_utc=now_utc,
-                fingerprint_ok=True,
-                ca_signature_ok=True,
+                ca_signature_ok=False,
                 period_ok=False,
             )
 
-        # 7. Revocación.
         cert_status = (cert.status or "").lower() or CertificateStatus.ACTIVE.value
         revoked_at = self._as_utc(cert.revoked_at)
 
@@ -370,9 +331,63 @@ class CertificateValidationService:
                     period_ok=True,
                     status_ok=False,
                 )
-        else:  # HISTORICAL
-            # Solo consideramos "revocado" si la revocación ocurrió antes o
-            # exactamente en la fecha de referencia.
+            if cert_status == CertificateStatus.EXPIRED.value or ref_date > valid_to:
+                return self._fail(
+                    state=CertValidationState.EXPIRED,
+                    reason=(
+                        "Certificate expired at reference_date"
+                        if ref_date > valid_to
+                        else "Certificate status is expired"
+                    ),
+                    certificate_id=cert.certificate_id,
+                    key_id=cert.key_id,
+                    validation_mode=mode,
+                    reference_date=ref_date,
+                    now_utc=now_utc,
+                    fingerprint_ok=True,
+                    ca_signature_ok=True,
+                    period_ok=False,
+                )
+            if ref_date < valid_from:
+                return self._fail(
+                    state=CertValidationState.INVALID,
+                    reason="Certificate not yet valid at reference_date",
+                    certificate_id=cert.certificate_id,
+                    key_id=cert.key_id,
+                    validation_mode=mode,
+                    reference_date=ref_date,
+                    now_utc=now_utc,
+                    fingerprint_ok=True,
+                    ca_signature_ok=True,
+                    period_ok=False,
+                )
+        else:  # HISTORICAL — API-INT-15-05: usar ref_date, no el estado "actual" solo
+            if ref_date > valid_to:
+                return self._fail(
+                    state=CertValidationState.EXPIRED,
+                    reason="Certificate expired at reference_date",
+                    certificate_id=cert.certificate_id,
+                    key_id=cert.key_id,
+                    validation_mode=mode,
+                    reference_date=ref_date,
+                    now_utc=now_utc,
+                    fingerprint_ok=True,
+                    ca_signature_ok=True,
+                    period_ok=False,
+                )
+            if ref_date < valid_from:
+                return self._fail(
+                    state=CertValidationState.INVALID,
+                    reason="Certificate not yet valid at reference_date",
+                    certificate_id=cert.certificate_id,
+                    key_id=cert.key_id,
+                    validation_mode=mode,
+                    reference_date=ref_date,
+                    now_utc=now_utc,
+                    fingerprint_ok=True,
+                    ca_signature_ok=True,
+                    period_ok=False,
+                )
             if revoked_at is not None and revoked_at <= ref_date:
                 return self._fail(
                     state=CertValidationState.REVOKED,
@@ -391,7 +406,23 @@ class CertificateValidationService:
                     status_ok=False,
                 )
 
-        # 8. Validación satisfactoria.
+        # 6. Firma de la Root CA (ancla de confianza), tras coherencia de vigencia/estado.
+        ca_signature_ok = self._verify_ca_signature(x509_cert, ca.public_key)
+        if not ca_signature_ok:
+            return self._fail(
+                state=CertValidationState.INVALID,
+                reason="Certificate signature not issued by internal Root CA",
+                certificate_id=cert.certificate_id,
+                key_id=cert.key_id,
+                validation_mode=mode,
+                reference_date=ref_date,
+                now_utc=now_utc,
+                fingerprint_ok=True,
+                ca_signature_ok=False,
+                period_ok=True,
+            )
+
+        # 7. Validación satisfactoria.
         return CertValidationResult(
             result=CertValidationState.VALID.value,
             reason=None,

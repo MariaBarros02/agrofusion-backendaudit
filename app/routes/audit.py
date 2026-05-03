@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.core.security import decode_export_download_token
 from app.schemas.audit import (
     AuditExportJobResponse,
+    AuditExportSigningReadinessResponse,
     CreateAuditExportRequest,
     ErrorExtProRequest,
     ListAuditRequest,
@@ -23,6 +24,7 @@ from app.services.audit_service import AuditService
 from app.repositories.audit_repository import AuditRepository
 from app.services.audit_export_service import (
     create_audit_export_job,
+    get_audit_export_signing_readiness,
     get_job_for_user,
     job_to_response,
     list_jobs_for_user,
@@ -1794,6 +1796,20 @@ def list_audit_exports(
     uid = current_user["user"].user_id
     jobs = list_jobs_for_user(db, uid, limit=limit)
     return [job_to_response(j) for j in jobs]
+
+
+@router.get(
+    "/exports/signing-readiness",
+    response_model=AuditExportSigningReadinessResponse,
+    summary="Comprobar si hay clave/certificate KMS listos para firmar exportaciones",
+)
+def audit_export_signing_readiness(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    _require_audit_export_permission(db, current_user)
+    uid = current_user["user"].user_id
+    return get_audit_export_signing_readiness(db, uid)
 
 
 @router.get(

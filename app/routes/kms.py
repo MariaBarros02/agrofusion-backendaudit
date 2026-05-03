@@ -300,6 +300,19 @@ def _log_kms_event(
                 }
             },
         },
+        404: {
+            "description": "Proyecto no encontrado (project_id inexistente en el body)",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "project_not_found": {
+                            "summary": "Proyecto inexistente",
+                            "value": {"detail": "Proyecto no encontrado"},
+                        }
+                    }
+                }
+            },
+        },
         500: {
             "description": "Error inesperado al crear la clave",
             "content": {
@@ -327,7 +340,9 @@ def create_key(
 
     Requiere permisos de administrador (KMS_ADMIN o AUDIT_SECURITY).
     La clave privada se almacena de forma segura en el KMS.
-    Por ahora la clave se asocia siempre al proyecto interno AGROFUSION (el backend ignora `project_id` en el body).
+    Si el body incluye ``project_id``, debe corresponder a un proyecto existente;
+    si no, se responde 404 con el mensaje ``Proyecto no encontrado``.
+    Si se omite ``project_id``, la clave se asocia al proyecto interno AGROFUSION.
     """
 
     
@@ -341,8 +356,15 @@ def create_key(
         audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
 
     service = KmsService()
-    try:
+    if request.project_id is not None:
+        project = service.audit_repo.get_project_by_id(db, project_id=request.project_id)
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
+        project_id = project.af_project_id
+    else:
         project_id = service.get_agrofusion_project(db).af_project_id
+
+    try:
 
         key = service.create_key(
             db=db,
@@ -699,7 +721,7 @@ def get_certificate_by_key(
     summary="Validar integridad de un certificado (RF-INT-15)",
     description=(
         "Valida la integridad, autenticidad y vigencia de un certificado X.509 "
-        "emitido por la Root CA interna. Soporta dos modos:\n\n"
+        "emitido por la Root CA interna. Soporta dos modos (`mode` o `validation_mode`):\n\n"
         "- **current**: valida el estado presente del certificado.\n"
         "- **historical**: valida el estado que tenía el certificado en la fecha "
         "indicada por `reference_date` (obligatorio en este modo).\n\n"
@@ -771,7 +793,14 @@ def get_certificate_by_key(
 def validate_certificate(
     infoRequest: Request,
     certificate_id: UUID,
-    mode: str = Query("current", description="Modo de validación: current | historical"),
+    mode: Optional[str] = Query(
+        None,
+        description="Modo de validación: current | historical (por defecto current si no se envía ningún modo)",
+    ),
+    validation_mode: Optional[str] = Query(
+        None,
+        description="Sinónimo de `mode` (p. ej. matrices RF-INT-15 / clientes que envían validation_mode).",
+    ),
     reference_date: Optional[str] = Query(
         None,
         description="Fecha ISO-8601 (obligatoria en modo historical)",
@@ -791,13 +820,14 @@ def validate_certificate(
     )
     from datetime import datetime as _dt
 
+    raw_mode = (validation_mode or "").strip() or (mode or "").strip() or "current"
     try:
-        mode_enum = ValidationMode(mode.lower())
+        mode_enum = ValidationMode(raw_mode.lower())
     except ValueError:
         raise audit_error(
             "INVALID_VALIDATION_MODE",
             status.HTTP_400_BAD_REQUEST,
-            {"mode": mode, "allowed": ["current", "historical"]},
+            {"mode": raw_mode, "allowed": ["current", "historical"]},
         )
 
     parsed_ref: Optional[_dt] = None
