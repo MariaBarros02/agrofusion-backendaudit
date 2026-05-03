@@ -15,11 +15,13 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.errors import audit_error
 from app.core.security import create_export_download_token
+from app.models.af_kms_keys import KeyPurpose
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.audit_export_repository import (
     AuditExportRepository,
     audit_export_to_job_dict,
 )
+from app.repositories.kms_repository import KmsRepository
 from app.schemas.audit import AuditExportJobResponse, CreateAuditExportRequest
 from app.services.permissions_service import PermissionsService
 
@@ -45,6 +47,28 @@ def _filters_payload(req: CreateAuditExportRequest) -> Dict[str, Any]:
         "search": req.search,
         "fields": req.fields,
     }
+
+
+def _primary_project_id_for_audit_export(db: Session, visible: List[UUID]) -> UUID:
+    """
+    ``af_projects.af_project_id`` para metadatos del export y resolución KMS:
+    primero un proyecto visible que tenga clave signing/both activa en BD;
+    si ninguno, el primero visible; si la lista está vacía, el proyecto de
+    cualquier clave signing activa (fallback desarrollo / usuario sin roles).
+    """
+    kr = KmsRepository()
+    for pid in visible:
+        keys = kr.get_active_keys_by_project(db, pid, KeyPurpose.SIGNING)
+        if not keys:
+            keys = kr.get_active_keys_by_project(db, pid, KeyPurpose.BOTH)
+        if keys:
+            return pid
+    if visible:
+        return visible[0]
+    fallback = kr.get_latest_active_signing_key_any_project(db)
+    if fallback:
+        return fallback.project_id
+    audit_error("INTERNAL_SERVER_ERROR", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 def _filters_summary(filters: Dict[str, Any]) -> str:
@@ -80,10 +104,7 @@ def create_audit_export_job(
     user_id: UUID = user.user_id
     repo = AuditRepository()
     visible = repo.get_user_visible_project_ids(db, user_id)
-    ag = repo.get_project_by_code(db, code="AGROFUSION")
-    if not ag:
-        audit_error("INTERNAL_SERVER_ERROR", status.HTTP_500_INTERNAL_SERVER_ERROR)
-    primary_project = visible[0] if visible else ag.af_project_id
+    primary_project = _primary_project_id_for_audit_export(db, visible)
 
     export_id = uuid.uuid4()
     filters_json = _filters_payload(body)
@@ -125,7 +146,7 @@ def job_to_response(
     dl = None
     exp_at = None
     dtoken = None
-    if include_download and job.get("status") == "COMPLETED" and job.get("file_path"):
+    if include_download and job.get("status") == "COMPLETED" and job.get("has_file_blob"):
         try:
             ttl = settings.export_download_ttl_minutes
             token = create_export_download_token(

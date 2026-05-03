@@ -1,11 +1,10 @@
-from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import Response
 from jose import JWTError
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from app.services.permissions_service import PermissionsService
 from app.core.errors import audit_error
 
@@ -1812,7 +1811,7 @@ def get_audit_export(
     job = get_job_for_user(db, export_id, uid)
     if not job:
         audit_error("EXPORT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
-    inc = job.get("status") == "COMPLETED"
+    inc = job.get("status") == "COMPLETED" and job.get("has_file_blob")
     return job_to_response(job, include_download=inc)
 
 
@@ -1840,35 +1839,46 @@ def download_audit_export(
     if job.get("status") != "COMPLETED":
         audit_error("EXPORT_NOT_READY", status.HTTP_400_BAD_REQUEST)
 
-    fp = job.get("file_path")
-    if not fp:
-        audit_error("EXPORT_FILE_MISSING", status.HTTP_404_NOT_FOUND)
-    path = Path(fp)
-    if not path.is_file():
-        audit_error("EXPORT_FILE_MISSING", status.HTTP_404_NOT_FOUND)
+    body: Optional[bytes] = None
+    blob = row.file_blob
+    if blob is not None:
+        try:
+            if len(blob) > 0:
+                body = bytes(blob)
+        except TypeError:
+            body = bytes(blob)
 
-    # No se audita EXPORT_DOWNLOADED: un solo registro por export (COMPLETED/FAILED en el worker).
+    fname = job.get("download_filename") or ""
 
-    er.increment_download(db, export_id)
+    def _resolve_media_filename() -> tuple[str, str]:
+        low = fname.lower()
+        fmt_u = (job.get("format") or "").upper()
+        if low.endswith(".zip"):
+            return "application/zip", fname or f"AgroFusion_Auditoria_{export_id}.zip"
+        if fmt_u == "CSV":
+            return "text/csv; charset=utf-8", fname or f"AgroFusion_Auditoria_{export_id}.csv"
+        if fmt_u == "JSONL":
+            return "application/x-ndjson; charset=utf-8", fname or f"AgroFusion_Auditoria_{export_id}.jsonl"
+        if fmt_u == "XLSX":
+            return (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                fname or f"AgroFusion_Auditoria_{export_id}.xlsx",
+            )
+        if fmt_u == "PDF":
+            return "application/pdf", fname or f"AgroFusion_Auditoria_{export_id}.pdf"
+        ext = low.rsplit(".", 1)[-1] if "." in fname else "bin"
+        return "application/octet-stream", fname or f"AgroFusion_Auditoria_{export_id}.{ext}"
 
-    if path.suffix.lower() == ".zip":
-        media = "application/zip"
-    else:
-        media = {
-            "CSV": "text/csv; charset=utf-8",
-            "JSONL": "application/x-ndjson; charset=utf-8",
-            "XLSX": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "PDF": "application/pdf",
-        }.get(job.get("format", ""), "application/octet-stream")
+    if body is not None:
+        media, fname_out = _resolve_media_filename()
+        er.increment_download(db, export_id)
+        return Response(
+            content=body,
+            media_type=media,
+            headers={"Content-Disposition": f'attachment; filename="{fname_out}"'},
+        )
 
-    fname = job.get("download_filename") or (
-        f"AgroFusion_Auditoria_{export_id}.{str(path.suffix).lstrip('.')}"
-    )
-    return FileResponse(
-        path=str(path),
-        filename=fname,
-        media_type=media,
-    )
+    audit_error("EXPORT_FILE_MISSING", status.HTTP_404_NOT_FOUND)
 
 
 @router.delete(
@@ -1886,15 +1896,6 @@ def delete_audit_export(
     job = get_job_for_user(db, export_id, uid)
     if not job:
         audit_error("EXPORT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
-
-    fp = job.get("file_path")
-    if fp:
-        p = Path(fp)
-        if p.is_file():
-            try:
-                p.unlink()
-            except OSError:
-                pass
 
     AuditExportRepository().delete(db, export_id)
 

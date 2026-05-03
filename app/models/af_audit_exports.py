@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     func,
@@ -49,7 +50,7 @@ class AfAuditExport(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)
     record_count = Column(Integer, nullable=True)
     file_size_bytes = Column(BigInteger, nullable=True)
-    file_path = Column(Text, nullable=True)
+    file_blob = Column(LargeBinary, nullable=True)
     file_hash = Column(String(128), nullable=True)
     digital_signature = Column(Text, nullable=True)
     download_count = Column(Integer, nullable=False, default=0)
