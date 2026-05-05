@@ -2465,7 +2465,7 @@ def revoke_key(
       ``KMS_CERT_REVOKED`` vinculado al certificado cascadeado.
     """
     perm_service = PermissionsService()
-    if not perm_service.validate_permission(db, current_user.get("role"), "026"):
+    if not perm_service.validate_permission(db, current_user.get("role"), "045"):
         audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
 
     service = KmsService()

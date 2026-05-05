@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     sso_private_key_path: str | None = None
     # Legado: antes carpeta de exports en disco; los informes de auditoría usan file_blob en BD.
     exports_base_path: str = "./data/exports"
-    audit_export_permission_code: str = "030"
+    audit_export_permission_code: str = "045"
     export_download_ttl_minutes: int = 60
     export_worker_poll_seconds: float = 2.0
     export_chunk_size: int = 10000
