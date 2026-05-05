@@ -98,13 +98,13 @@ app = FastAPI(
 )
 # Orígenes permitidos para solicitudes CORS (frontend)
 origins = [
-    "https://inmero.co/agrofusionTest",
-    "https://www.inmero.co/agrofusionTest",
-    "https://inmero.co",
-    "https://www.inmero.co"
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:5173",
+    "https://www.inmero.co",           # El dominio principal
+    "https://wwww.inmero.co/agrofusion", # La subcarpeta del frontend
+    "https://inmero.co",           # El dominio principal
+    "https://inmero.co/agrofusion", # La subcarpeta del frontend
+    "http://localhost:5173",   # Frontend local (Vite)
+    "http://localhost:3000",   # Frontend alternativo
+    "http://127.0.0.1:5173",   # Backend / frontend local
 ]
 # Middleware CORS para permitir comunicación entre frontend y backend
 app.add_middleware(
