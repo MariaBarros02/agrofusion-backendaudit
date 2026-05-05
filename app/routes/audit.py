@@ -1,11 +1,10 @@
-from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import Response
 from jose import JWTError
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from app.services.permissions_service import PermissionsService
 from app.core.errors import audit_error
 
@@ -15,6 +14,7 @@ from app.core.config import settings
 from app.core.security import decode_export_download_token
 from app.schemas.audit import (
     AuditExportJobResponse,
+    AuditExportSigningReadinessResponse,
     CreateAuditExportRequest,
     ErrorExtProRequest,
     ListAuditRequest,
@@ -24,6 +24,7 @@ from app.services.audit_service import AuditService
 from app.repositories.audit_repository import AuditRepository
 from app.services.audit_export_service import (
     create_audit_export_job,
+    get_audit_export_signing_readiness,
     get_job_for_user,
     job_to_response,
     list_jobs_for_user,
@@ -1774,12 +1775,11 @@ def _require_audit_export_permission(db: Session, current_user: dict) -> None:
 )
 def create_audit_export(
     body: CreateAuditExportRequest,
-    request: Request,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     _require_audit_export_permission(db, current_user)
-    return create_audit_export_job(db, request=request, current_user=current_user, body=body)
+    return create_audit_export_job(db, current_user=current_user, body=body)
 
 
 @router.get(
@@ -1799,6 +1799,20 @@ def list_audit_exports(
 
 
 @router.get(
+    "/exports/signing-readiness",
+    response_model=AuditExportSigningReadinessResponse,
+    summary="Comprobar si hay clave/certificate KMS listos para firmar exportaciones",
+)
+def audit_export_signing_readiness(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    _require_audit_export_permission(db, current_user)
+    uid = current_user["user"].user_id
+    return get_audit_export_signing_readiness(db, uid)
+
+
+@router.get(
     "/exports/{export_id}",
     response_model=AuditExportJobResponse,
     summary="Estado de una exportación",
@@ -1813,7 +1827,7 @@ def get_audit_export(
     job = get_job_for_user(db, export_id, uid)
     if not job:
         audit_error("EXPORT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
-    inc = job.get("status") == "COMPLETED"
+    inc = job.get("status") == "COMPLETED" and job.get("has_file_blob")
     return job_to_response(job, include_download=inc)
 
 
@@ -1841,46 +1855,46 @@ def download_audit_export(
     if job.get("status") != "COMPLETED":
         audit_error("EXPORT_NOT_READY", status.HTTP_400_BAD_REQUEST)
 
-    fp = job.get("file_path")
-    if not fp:
-        audit_error("EXPORT_FILE_MISSING", status.HTTP_404_NOT_FOUND)
-    path = Path(fp)
-    if not path.is_file():
-        audit_error("EXPORT_FILE_MISSING", status.HTTP_404_NOT_FOUND)
+    body: Optional[bytes] = None
+    blob = row.file_blob
+    if blob is not None:
+        try:
+            if len(blob) > 0:
+                body = bytes(blob)
+        except TypeError:
+            body = bytes(blob)
 
-    repo = AuditRepository()
-    try:
-        ag = repo.get_project_by_code(db, code="AGROFUSION")
-        pid = ag.af_project_id if ag else None
-        repo.log_event_optional_term(
-            db,
-            action_code="EXPORT_DOWNLOADED",
-            outcome="success",
-            module_code="AUDIT_EXPORT",
-            project_id=pid,
-            actor_id=UUID(payload["sub"]),
-            metadata={"export_request_id": str(export_id), "file_hash": job.get("file_hash")},
+    fname = job.get("download_filename") or ""
+
+    def _resolve_media_filename() -> tuple[str, str]:
+        low = fname.lower()
+        fmt_u = (job.get("format") or "").upper()
+        if low.endswith(".zip"):
+            return "application/zip", fname or f"AgroFusion_Auditoria_{export_id}.zip"
+        if fmt_u == "CSV":
+            return "text/csv; charset=utf-8", fname or f"AgroFusion_Auditoria_{export_id}.csv"
+        if fmt_u == "JSONL":
+            return "application/x-ndjson; charset=utf-8", fname or f"AgroFusion_Auditoria_{export_id}.jsonl"
+        if fmt_u == "XLSX":
+            return (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                fname or f"AgroFusion_Auditoria_{export_id}.xlsx",
+            )
+        if fmt_u == "PDF":
+            return "application/pdf", fname or f"AgroFusion_Auditoria_{export_id}.pdf"
+        ext = low.rsplit(".", 1)[-1] if "." in fname else "bin"
+        return "application/octet-stream", fname or f"AgroFusion_Auditoria_{export_id}.{ext}"
+
+    if body is not None:
+        media, fname_out = _resolve_media_filename()
+        er.increment_download(db, export_id)
+        return Response(
+            content=body,
+            media_type=media,
+            headers={"Content-Disposition": f'attachment; filename="{fname_out}"'},
         )
-    except Exception:
-        pass
 
-    er.increment_download(db, export_id)
-
-    media = {
-        "CSV": "text/csv; charset=utf-8",
-        "JSONL": "application/x-ndjson; charset=utf-8",
-        "XLSX": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "PDF": "application/pdf",
-    }.get(job.get("format", ""), "application/octet-stream")
-
-    fname = job.get("download_filename") or (
-        f"AgroFusion_Auditoria_{export_id}.{str(path.suffix).lstrip('.')}"
-    )
-    return FileResponse(
-        path=str(path),
-        filename=fname,
-        media_type=media,
-    )
+    audit_error("EXPORT_FILE_MISSING", status.HTTP_404_NOT_FOUND)
 
 
 @router.delete(
@@ -1899,31 +1913,8 @@ def delete_audit_export(
     if not job:
         audit_error("EXPORT_NOT_FOUND", status.HTTP_404_NOT_FOUND)
 
-    fp = job.get("file_path")
-    if fp:
-        p = Path(fp)
-        if p.is_file():
-            try:
-                p.unlink()
-            except OSError:
-                pass
-
     AuditExportRepository().delete(db, export_id)
 
-    repo = AuditRepository()
-    try:
-        ag = repo.get_project_by_code(db, code="AGROFUSION")
-        pid = ag.af_project_id if ag else None
-        repo.log_event_optional_term(
-            db,
-            action_code="EXPORT_DELETED",
-            outcome="success",
-            module_code="AUDIT_EXPORT",
-            project_id=pid,
-            actor_id=uid,
-            metadata={"export_request_id": str(export_id)},
-        )
-    except Exception:
-        pass
+    # Sin evento de auditoría adicional: un solo registro por export (COMPLETED/FAILED).
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

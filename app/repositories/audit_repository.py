@@ -9,6 +9,8 @@ from app.schemas.audit import ErrorExtProRequest
 
 from app.models.af_audit_log import AuditLog
 from app.models.users import Users
+from app.models.cat_vocabularies import CatVocabulary
+
 from app.models.af_projects import Project
 from app.models.af_user_project_roles import AfUserProjectRole
 
@@ -227,17 +229,18 @@ class AuditRepository:
         """
 
         events = (
-        db.query(
+       db.query(
             AuditLog.action_code,
             CatTerm.label
-        )
-        .join(
+        ).join(
             CatTerm,
-            CatTerm.code == AuditLog.action_code
-        )
-        .distinct()
-        .order_by(AuditLog.action_code.asc())
-        .all()
+            CatTerm.term_id == AuditLog.action_term_id
+        ).join(
+            CatVocabulary,
+            CatVocabulary.vocabulary_id == CatTerm.vocabulary_id
+        ).filter(
+            CatVocabulary.vocabulary_code == "AUDIT_ACTION"
+        ).distinct().order_by(AuditLog.action_code.asc()).all()
     )
 
         return events
@@ -363,6 +366,18 @@ class AuditRepository:
         return (
             db.query(Project)
             .filter(Project.code == code)
+            .first()
+        )
+
+    def get_project_by_id(self, db: Session, *, project_id: UUID):
+        """
+        Obtiene un proyecto por su UUID (af_project_id).
+
+        :return: Instancia de Project o None
+        """
+        return (
+            db.query(Project)
+            .filter(Project.af_project_id == project_id)
             .first()
         )
 

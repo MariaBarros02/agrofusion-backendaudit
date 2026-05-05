@@ -46,7 +46,8 @@ from app.models.users import Users
 from app.models.af_kms_signatures import HashAlgorithm
 from app.models.af_kms_signature_validations import AfKmsSignatureValidation
 from app.models.af_audit_log import AuditLog
-from sqlalchemy import func, or_, String
+from sqlalchemy import cast, func, or_, String
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from datetime import datetime
 from app.core.errors import audit_error
 from app.dependencies.auth import get_current_user_id, get_current_user
@@ -299,6 +300,19 @@ def _log_kms_event(
                 }
             },
         },
+        404: {
+            "description": "Proyecto no encontrado (project_id inexistente en el body)",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "project_not_found": {
+                            "summary": "Proyecto inexistente",
+                            "value": {"detail": "Proyecto no encontrado"},
+                        }
+                    }
+                }
+            },
+        },
         500: {
             "description": "Error inesperado al crear la clave",
             "content": {
@@ -326,7 +340,9 @@ def create_key(
 
     Requiere permisos de administrador (KMS_ADMIN o AUDIT_SECURITY).
     La clave privada se almacena de forma segura en el KMS.
-    Por ahora la clave se asocia siempre al proyecto interno AGROFUSION (el backend ignora `project_id` en el body).
+    Si el body incluye ``project_id``, debe corresponder a un proyecto existente;
+    si no, se responde 404 con el mensaje ``Proyecto no encontrado``.
+    Si se omite ``project_id``, la clave se asocia al proyecto interno AGROFUSION.
     """
 
     
@@ -340,8 +356,15 @@ def create_key(
         audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
 
     service = KmsService()
-    try:
+    if request.project_id is not None:
+        project = service.audit_repo.get_project_by_id(db, project_id=request.project_id)
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
+        project_id = project.af_project_id
+    else:
         project_id = service.get_agrofusion_project(db).af_project_id
+
+    try:
 
         key = service.create_key(
             db=db,
@@ -399,9 +422,6 @@ def create_key(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        print(f"Error creating key: {str(e)}")
-        print(traceback.format_exc())
         raise audit_error("KEY_CREATION_FAILED", status.HTTP_500_INTERNAL_SERVER_ERROR, {"error": str(e)})
 
 
@@ -701,7 +721,7 @@ def get_certificate_by_key(
     summary="Validar integridad de un certificado (RF-INT-15)",
     description=(
         "Valida la integridad, autenticidad y vigencia de un certificado X.509 "
-        "emitido por la Root CA interna. Soporta dos modos:\n\n"
+        "emitido por la Root CA interna. Soporta dos modos (`mode` o `validation_mode`):\n\n"
         "- **current**: valida el estado presente del certificado.\n"
         "- **historical**: valida el estado que tenía el certificado en la fecha "
         "indicada por `reference_date` (obligatorio en este modo).\n\n"
@@ -773,7 +793,14 @@ def get_certificate_by_key(
 def validate_certificate(
     infoRequest: Request,
     certificate_id: UUID,
-    mode: str = Query("current", description="Modo de validación: current | historical"),
+    mode: Optional[str] = Query(
+        None,
+        description="Modo de validación: current | historical (por defecto current si no se envía ningún modo)",
+    ),
+    validation_mode: Optional[str] = Query(
+        None,
+        description="Sinónimo de `mode` (p. ej. matrices RF-INT-15 / clientes que envían validation_mode).",
+    ),
     reference_date: Optional[str] = Query(
         None,
         description="Fecha ISO-8601 (obligatoria en modo historical)",
@@ -793,13 +820,14 @@ def validate_certificate(
     )
     from datetime import datetime as _dt
 
+    raw_mode = (validation_mode or "").strip() or (mode or "").strip() or "current"
     try:
-        mode_enum = ValidationMode(mode.lower())
+        mode_enum = ValidationMode(raw_mode.lower())
     except ValueError:
         raise audit_error(
             "INVALID_VALIDATION_MODE",
             status.HTTP_400_BAD_REQUEST,
-            {"mode": mode, "allowed": ["current", "historical"]},
+            {"mode": raw_mode, "allowed": ["current", "historical"]},
         )
 
     parsed_ref: Optional[_dt] = None
@@ -1313,14 +1341,17 @@ def validate_signature_presentable(
         db, signature_record.signer_user_id if signature_record else None
     )
 
-    result_code = (
+    # ValidationResult guarda valores en minúsculas ("invalid", "valid", …);
+    # los textos UI usan claves en MAYÚSCULAS.
+    result_raw = (
         validation.validation_result.value
         if hasattr(validation.validation_result, "value")
         else str(validation.validation_result)
     )
-    estado = _VALIDATION_ESTADO_MAP.get(result_code, result_code.title())
+    result_norm = str(result_raw).strip().upper()
+    estado = _VALIDATION_ESTADO_MAP.get(result_norm, str(result_raw).title())
     resultado_general = _VALIDATION_DESCRIPCION_MAP.get(
-        result_code,
+        result_norm,
         "El sistema no pudo determinar de forma concluyente el estado de la firma.",
     )
 
@@ -1354,7 +1385,7 @@ def validate_signature_presentable(
             "target_id": str(signature_id),
             "validation_id": str(validation.validation_id),
             "signature_id": str(signature_id),
-            "validation_result": result_code,
+            "validation_result": result_norm,
             "estado_presentado": estado,
             "presentation_layer": True,
         },
@@ -1382,10 +1413,10 @@ def validate_signature_presentable(
     response_model=SignatureQueryResponse,
     summary="Consultar firmas digitales (RF-INT-19)",
     description=(
-        "Listado paginado (máximo 5 registros por página) de firmas digitales "
-        "con filtros por rango de fechas, usuario firmante, tipo de documento "
-        "y estado de validación. No expone el valor de la firma digital ni el "
-        "contenido del certificado."
+        "Listado paginado de firmas digitales (af_kms_signatures) con filtros. "
+        "Incluye opción `audit_export_only` para lotes de exportación de auditoría "
+        "firmados (document_type=AUDIT_EXPORT). No expone el valor de la firma "
+        "digital ni el contenido del certificado."
     ),
     responses={**_auth_responses("028")},
 )
@@ -1397,15 +1428,30 @@ def query_signatures_rfint19(
         None, description="Fecha máxima de firma (signed_at <=)"
     ),
     signer_user_id: Optional[UUID] = Query(
-        None, description="Identificador del usuario firmante"
+        None, description="Identificador del usuario firmante (UUID exacto)"
+    ),
+    signer_name: Optional[str] = Query(
+        None, description="Búsqueda por nombre de usuario (users.name, subcadena)"
+    ),
+    q: Optional[str] = Query(
+        None,
+        description="Texto en ID de firma, documento, hash o nombre de exportación",
+    ),
+    key_algorithm: Optional[str] = Query(
+        None, description="Subcadena del algoritmo de clave (ej. RSA, ECDSA)",
     ),
     document_type: Optional[str] = Query(
-        None, description="Tipo de documento firmado"
+        None, description="Tipo de documento firmado (omitir si audit_export_only=true)"
+    ),
+    audit_export_only: bool = Query(
+        False,
+        description="Solo firmas de exportación de auditoría (AUDIT_EXPORT)",
     ),
     validation_status: Optional[str] = Query(
         None,
         description="Estado: valid | invalid | expired | revoked | unknown",
     ),
+    limit: int = Query(10, ge=1, le=100, description="Tamaño de página"),
     offset: int = Query(0, ge=0, description="Registros a saltar (paginación)"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
@@ -1435,9 +1481,13 @@ def query_signatures_rfint19(
         date_from=date_from,
         date_to=date_to,
         signer_user_id=signer_user_id,
+        signer_name=signer_name,
+        search_q=q,
         document_type=document_type,
+        audit_export_only=audit_export_only,
+        key_algorithm=key_algorithm,
         validation_status=validation_status,
-        limit=5,
+        limit=limit,
         offset=offset,
     )
 
@@ -1445,7 +1495,7 @@ def query_signatures_rfint19(
     return SignatureQueryResponse(
         items=items,
         total_count=total,
-        limit=5,
+        limit=limit,
         offset=offset,
     )
 
@@ -2066,8 +2116,22 @@ _VALIDATION_STATUS_ALLOWED = {"valid", "invalid", "expired", "revoked", "unknown
 
 def _signature_row_to_query_item(row) -> SignatureQueryItem:
     """Mapea una fila de la búsqueda RF-INT-19 al schema público."""
-    sig, validation_status, expires_at, signer_name = row
+    (
+        sig,
+        validation_status,
+        expires_at,
+        signer_name,
+        key_algorithm,
+        export_name,
+    ) = row
     status_value = (validation_status or "unknown").lower()
+    key_alg = None
+    if key_algorithm is not None:
+        key_alg = (
+            key_algorithm.value
+            if hasattr(key_algorithm, "value")
+            else str(key_algorithm)
+        )
     return SignatureQueryItem(
         signature_id=sig.signature_id,
         validation_status=status_value,
@@ -2078,6 +2142,8 @@ def _signature_row_to_query_item(row) -> SignatureQueryItem:
         signer_name=signer_name,
         signed_at=sig.signed_at,
         document_id=sig.document_id,
+        key_algorithm=key_alg,
+        export_name=export_name,
     )
 
 
@@ -2134,6 +2200,30 @@ def signature_detail_rfint19(
         if user:
             signer_name = user.name
 
+    key_alg_s = None
+    if sig.key_id:
+        from app.models.af_kms_keys import AfKmsKey as _K
+
+        krow = db.query(_K).filter(_K.key_id == sig.key_id).first()
+        if krow and krow.algorithm is not None:
+            key_alg_s = (
+                krow.algorithm.value
+                if hasattr(krow.algorithm, "value")
+                else str(krow.algorithm)
+            )
+
+    export_name = None
+    if sig.document_id:
+        from app.models.af_audit_exports import AfAuditExport as _E
+
+        erow = (
+            db.query(_E)
+            .filter(_E.export_id == cast(sig.document_id, PGUUID(as_uuid=True)))
+            .first()
+        )
+        if erow:
+            export_name = erow.export_name
+
     return SignatureQueryDetail(
         signature_id=sig.signature_id,
         validation_status=validation_status,
@@ -2144,6 +2234,8 @@ def signature_detail_rfint19(
         signer_name=signer_name,
         signed_at=sig.signed_at,
         document_id=sig.document_id,
+        key_algorithm=key_alg_s,
+        export_name=export_name,
         document_hash=sig.document_hash,
         hash_algorithm=sig.hash_algorithm,
         signing_reason=sig.signing_reason,
@@ -2373,7 +2465,7 @@ def revoke_key(
       ``KMS_CERT_REVOKED`` vinculado al certificado cascadeado.
     """
     perm_service = PermissionsService()
-    if not perm_service.validate_permission(db, current_user.get("role"), "026"):
+    if not perm_service.validate_permission(db, current_user.get("role"), "045"):
         audit_error("AUTH_INSUFFICIENT_PERMISSIONS", status.HTTP_403_FORBIDDEN)
 
     service = KmsService()

@@ -25,6 +25,11 @@ def audit_export_to_job_dict(row: AfAuditExport) -> Dict[str, Any]:
     """
     fj = dict(row.filters_json or {})
     primary = _meta_get(fj, "_primary_project_id")
+    blob = row.file_blob
+    try:
+        has_blob = blob is not None and len(blob) > 0
+    except TypeError:
+        has_blob = False
     return {
         "export_id": str(row.export_id),
         "request_by": str(row.requested_by),
@@ -38,7 +43,7 @@ def audit_export_to_job_dict(row: AfAuditExport) -> Dict[str, Any]:
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
         "failed_at": None,
         "export_name": row.export_name,
-        "file_path": row.file_path,
+        "has_file_blob": has_blob,
         "file_size_bytes": row.file_size_bytes,
         "file_hash": row.file_hash,
         "digital_signature": row.digital_signature,
@@ -143,7 +148,7 @@ class AuditExportRepository:
         db: Session,
         export_id: UUID,
         *,
-        file_path: str,
+        file_blob: bytes,
         file_size_bytes: int,
         file_hash: str,
         digital_signature: Optional[str],
@@ -162,7 +167,7 @@ class AuditExportRepository:
         row.processing_time_ms = processing_time_ms
         row.record_count = record_count
         row.file_size_bytes = file_size_bytes
-        row.file_path = file_path
+        row.file_blob = file_blob
         row.file_hash = file_hash
         row.digital_signature = digital_signature
         row.expires_at = now + timedelta(days=retention_days)

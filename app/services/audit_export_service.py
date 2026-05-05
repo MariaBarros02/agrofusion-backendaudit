@@ -9,18 +9,24 @@ from typing import Any, Dict, List, Optional
 import uuid
 from uuid import UUID
 
-from fastapi import Request, status
+from fastapi import status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.errors import audit_error
 from app.core.security import create_export_download_token
+from app.models.af_kms_keys import KeyPurpose
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.audit_export_repository import (
     AuditExportRepository,
     audit_export_to_job_dict,
 )
-from app.schemas.audit import AuditExportJobResponse, CreateAuditExportRequest
+from app.repositories.kms_repository import KmsRepository
+from app.schemas.audit import (
+    AuditExportJobResponse,
+    AuditExportSigningReadinessResponse,
+    CreateAuditExportRequest,
+)
 from app.services.permissions_service import PermissionsService
 
 
@@ -47,6 +53,28 @@ def _filters_payload(req: CreateAuditExportRequest) -> Dict[str, Any]:
     }
 
 
+def _primary_project_id_for_audit_export(db: Session, visible: List[UUID]) -> UUID:
+    """
+    ``af_projects.af_project_id`` para metadatos del export y resolución KMS:
+    primero un proyecto visible que tenga clave signing/both activa en BD;
+    si ninguno, el primero visible; si la lista está vacía, el proyecto de
+    cualquier clave signing activa (fallback desarrollo / usuario sin roles).
+    """
+    kr = KmsRepository()
+    for pid in visible:
+        keys = kr.get_active_keys_by_project(db, pid, KeyPurpose.SIGNING)
+        if not keys:
+            keys = kr.get_active_keys_by_project(db, pid, KeyPurpose.BOTH)
+        if keys:
+            return pid
+    if visible:
+        return visible[0]
+    fallback = kr.get_latest_active_signing_key_any_project(db)
+    if fallback:
+        return fallback.project_id
+    audit_error("INTERNAL_SERVER_ERROR", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 def _filters_summary(filters: Dict[str, Any]) -> str:
     parts = []
     if filters.get("date_from") or filters.get("date_to"):
@@ -62,10 +90,62 @@ def _filters_summary(filters: Dict[str, Any]) -> str:
     return ",".join(parts) if parts else "none"
 
 
+def get_audit_export_signing_readiness(
+    db: Session, user_id: UUID
+) -> AuditExportSigningReadinessResponse:
+    """
+    Comprueba si el tenant puede firmar exports (clave signing activa, material cifrado,
+    certificado ACTIVE), usando la misma resolución de proyecto/clave que el worker.
+    """
+    from app.services.audit_export_signing import resolve_signing_key_for_export
+
+    ar = AuditRepository()
+    kr = KmsRepository()
+    visible = ar.get_user_visible_project_ids(db, user_id)
+
+    primary: UUID | None = None
+    for pid in visible:
+        keys = kr.get_active_keys_by_project(db, pid, KeyPurpose.SIGNING)
+        if not keys:
+            keys = kr.get_active_keys_by_project(db, pid, KeyPurpose.BOTH)
+        if keys:
+            primary = pid
+            break
+    if primary is None and visible:
+        primary = visible[0]
+    elif primary is None:
+        fb0 = kr.get_latest_active_signing_key_any_project(db)
+        primary = fb0.project_id if fb0 else None
+
+    if primary is None:
+        return AuditExportSigningReadinessResponse(
+            ready=False, reason_code="NO_PROJECT_CONTEXT"
+        )
+
+    key_id, _ = resolve_signing_key_for_export(db, primary, log_fallback=False)
+    if not key_id:
+        return AuditExportSigningReadinessResponse(
+            ready=False, reason_code="NO_ACTIVE_SIGNING_KEY"
+        )
+
+    key_row = kr.get_key_by_id(db, key_id)
+    if not key_row or not (key_row.private_key_encrypted or "").strip():
+        return AuditExportSigningReadinessResponse(
+            ready=False, reason_code="NO_ENCRYPTED_PRIVATE_KEY"
+        )
+
+    cert = kr.get_active_certificate_by_key_id(db, key_id)
+    if not cert:
+        return AuditExportSigningReadinessResponse(
+            ready=False, reason_code="NO_ACTIVE_CERTIFICATE"
+        )
+
+    return AuditExportSigningReadinessResponse(ready=True, reason_code=None)
+
+
 def create_audit_export_job(
     db: Session,
     *,
-    request: Request,
     current_user: dict,
     body: CreateAuditExportRequest,
 ) -> AuditExportJobResponse:
@@ -81,10 +161,7 @@ def create_audit_export_job(
     user_id: UUID = user.user_id
     repo = AuditRepository()
     visible = repo.get_user_visible_project_ids(db, user_id)
-    ag = repo.get_project_by_code(db, code="AGROFUSION")
-    if not ag:
-        audit_error("INTERNAL_SERVER_ERROR", status.HTTP_500_INTERNAL_SERVER_ERROR)
-    primary_project = visible[0] if visible else ag.af_project_id
+    primary_project = _primary_project_id_for_audit_export(db, visible)
 
     export_id = uuid.uuid4()
     filters_json = _filters_payload(body)
@@ -108,33 +185,10 @@ def create_audit_export_job(
         priority=body.priority.value,
         export_name=body.export_name,
     )
+    # Persistir el job: sin commit la sesión hace rollback al cerrar y GET /exports/{id} devuelve 404.
+    db.commit()
 
-    session = current_user.get("session")
-    ip = None
-    try:
-        from app.dependencies.auth import get_client_ip
-
-        ip = get_client_ip(request)
-    except Exception:
-        pass
-
-    repo.log_event_optional_term(
-        db,
-        action_code="EXPORT_REQUESTED",
-        outcome="success",
-        module_code="AUDIT_EXPORT",
-        project_id=primary_project,
-        actor_id=user_id,
-        session_id=session.sso_session_id if session else None,
-        ip=ip,
-        user_agent=request.headers.get("user-agent"),
-        metadata={
-            "format": body.format.value,
-            "filters_summary": _filters_summary(filters_json),
-            "priority": body.priority.value,
-            "export_id": str(export_id),
-        },
-    )
+    # Un solo registro de auditoría por export: EXPORT_COMPLETED o EXPORT_FAILED (worker).
 
     row = er.get_by_id(db, export_id)
     job = audit_export_to_job_dict(row) if row else {}
@@ -149,7 +203,7 @@ def job_to_response(
     dl = None
     exp_at = None
     dtoken = None
-    if include_download and job.get("status") == "COMPLETED" and job.get("file_path"):
+    if include_download and job.get("status") == "COMPLETED" and job.get("has_file_blob"):
         try:
             ttl = settings.export_download_ttl_minutes
             token = create_export_download_token(
