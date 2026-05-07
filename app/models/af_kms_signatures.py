@@ -22,11 +22,15 @@ import enum
 
 
 class SignatureFormat(str, enum.Enum):
-    """Formatos de firma digital soportados."""
+    """
+    Formatos de firma digital soportados por el sistema (RF-INT-16).
+
+    Solo se permiten JWS (RFC 7515) y PKCS#7/CMS. Los formatos XAdES y CAdES
+    están explícitamente prohibidos por el requerimiento.
+    """
+
     PKCS7 = "PKCS7"
     JWS = "JWS"
-    XADES = "XAdES"
-    CADES = "CAdES"
 
 
 class HashAlgorithm(str, enum.Enum):
@@ -45,7 +49,6 @@ class AfKmsSignature(Base):
     """
 
     __tablename__ = "af_kms_signatures"
-    __table_args__ = {"schema": "public"}
 
     # Identificador único de la firma
     signature_id = Column(
@@ -59,6 +62,15 @@ class AfKmsSignature(Base):
         UUID(as_uuid=True),
         ForeignKey("public.af_kms_keys.key_id", onupdate="NO ACTION", ondelete="NO ACTION"),
         nullable=False,
+        index=True,
+    )
+
+    # Certificado usado para firmar (RF-INT-16: obligatorio).
+    certificate_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.af_kms_certificates.certificate_id", onupdate="NO ACTION", ondelete="NO ACTION"),
+        nullable=True,  # Nullable a nivel ORM para compatibilidad con filas
+                         # históricas; la lógica de negocio lo exige en creación.
         index=True,
     )
 
@@ -136,20 +148,14 @@ class AfKmsSignature(Base):
         index=True,
     )
 
-    # Fecha de creación del registro
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    # Índices para optimizar búsquedas
+    # Índices + schema (un solo __table_args__)
     __table_args__ = (
         Index("ix_kms_sig_key", "key_id"),
         Index("ix_kms_sig_doc", "document_id"),
         Index("ix_kms_sig_type", "document_type"),
         Index("ix_kms_sig_project", "project_id"),
         Index("ix_kms_sig_hash", "document_hash"),
+        {"schema": "public"},
     )
 
     def __repr__(self) -> str:

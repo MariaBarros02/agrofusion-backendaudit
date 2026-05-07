@@ -38,7 +38,6 @@ class AfKmsKeyRotation(Base):
     """
 
     __tablename__ = "af_kms_key_rotations"
-    __table_args__ = {"schema": "public"}
 
     # Identificador único de la rotación
     rotation_id = Column(
@@ -79,7 +78,7 @@ class AfKmsKeyRotation(Base):
     # Usuario o sistema que ejecutó la rotación
     rotated_by = Column(
         UUID(as_uuid=True),
-        nullable=False,
+        nullable=True,
     )
 
     # Fecha de rotación
@@ -90,11 +89,11 @@ class AfKmsKeyRotation(Base):
         index=True,
     )
 
-    # Índices para optimizar búsquedas
     __table_args__ = (
         Index("ix_kms_rot_old", "old_key_id"),
         Index("ix_kms_rot_new", "new_key_id"),
         Index("ix_kms_rot_at", "rotated_at"),
+        {"schema": "public"},
     )
 
     def __repr__(self) -> str:
