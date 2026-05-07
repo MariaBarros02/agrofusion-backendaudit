@@ -92,7 +92,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     root_path="/agrofusion/test/audit",
     title="API Inmero - Backend Auditory Agrofusion - Testing",
-    version="1.0.0",
+    version="1.3.0",
     description="API de auditoría para el backend de Agrofusion, encargada del registro y consulta de eventos y errores.",
     lifespan=lifespan,
 )
