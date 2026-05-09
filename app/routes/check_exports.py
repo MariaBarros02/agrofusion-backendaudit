@@ -19,9 +19,9 @@ router = APIRouter(prefix="/audit", tags=["Check Exports"])
 
 
 @router.get(
-    "/exports/signing-readiness",
+    "/checks/signing-readiness",
     response_model=SigningReadinessResponse,
-    summary="Verificar disponibilidad de firma digital",
+    summary="Verificar disponibilidad de firma digital para comprobantes",
 )
 def signing_readiness(
     db: Session = Depends(get_db),
@@ -47,9 +47,9 @@ def export_check(
 
 
 @router.get(
-    "/exports/{export_id}",
+    "/checks/exports/{export_id}",
     response_model=CheckExportResponse,
-    summary="Obtener estado de exportación",
+    summary="Obtener estado de exportación de comprobante",
 )
 def get_export(
     export_id: str,
@@ -61,8 +61,8 @@ def get_export(
 
 
 @router.get(
-    "/exports/{export_id}/download",
-    summary="Descargar archivo de exportación",
+    "/checks/exports/{export_id}/download",
+    summary="Descargar archivo de exportación de comprobante",
 )
 def download_export(
     export_id: str,

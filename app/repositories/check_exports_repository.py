@@ -1,6 +1,6 @@
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -49,6 +49,7 @@ class CheckExportsRepository:
     ) -> AfAuditExport:
         now = datetime.now(timezone.utc)
         record = AfAuditExport(
+            export_id=uuid4(),
             tenant_id=tenant_id,
             requested_by=requested_by,
             export_format=export_format,
