@@ -16,6 +16,7 @@ from app.core.database import SessionLocal
 from app.repositories.audit_repository import AuditRepository
 from app.routes.audit import router as router_audit
 from app.routes.kms import router as router_kms
+from app.routes.check_exports import router as router_check_exports
 from app.services.audit_export_worker import (
     start_audit_export_worker,
     stop_audit_export_worker,
@@ -122,6 +123,9 @@ async def health_check():
 
 # Registro de rutas relacionadas con KMS (Key Management Service)
 app.include_router(router_kms)
+
+# Registro de rutas de exportación de comprobantes contables (RF-INT-32)
+app.include_router(router_check_exports)
 
 if __name__ == "__main__":
     uvicorn.run(
