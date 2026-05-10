@@ -85,25 +85,7 @@ class CheckExportsService:
 
         signature_value: Optional[str] = None
         signing_key = self.repo.get_active_signing_key(db)
-        if signing_key:
-            try:
-                _user_obj = current_user.get("user")
-                user_uuid = _user_obj.user_id if _user_obj else None
-                sig = self.kms_service.sign_document(
-                    db,
-                    document_hash=file_hash,
-                    key_id=signing_key.key_id,
-                    hash_algorithm=HashAlgorithm.SHA256,
-                    signature_format=SignatureFormat.PKCS7,
-                    include_timestamp=True,
-                    document_id=transfer.transfer_id,
-                    document_type="ACCOUNTING_CHECK_EXPORT",
-                    signer_user_id=user_uuid,
-                    signing_reason="Exportación de comprobante contable",
-                )
-                signature_value = sig.digital_signature
-            except Exception:
-                pass
+        record = None
 
         project_label = self._project_label(transfer)
         date_label = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -125,22 +107,44 @@ class CheckExportsService:
         requested_by = _user_obj.user_id if _user_obj else None
         if not requested_by:
             raise audit_error("AUTH_INVALID_TOKEN", status.HTTP_401_UNAUTHORIZED)
+        if signing_key:
+            try:
+                _user_obj = current_user.get("user")
+                user_uuid = _user_obj.user_id if _user_obj else None
+
+                record = self.repo.create_export(
+                    db,
+                    check_id=payload.check_id,
+                    tenant_id=tenant_id,
+                    requested_by=requested_by,
+                    export_format=payload.format,
+                    export_name=export_name,
+                    status="COMPLETED",
+                    file_size_bytes=len(zip_bytes),
+                    file_hash=file_hash,
+                    digital_signature=signature_value,
+                    file_blob=zip_bytes,
+                )
+
+                sig = self.kms_service.sign_document(
+                    db,
+                    document_hash=file_hash,
+                    key_id=signing_key.key_id,
+                    hash_algorithm=HashAlgorithm.SHA256,
+                    signature_format=SignatureFormat.PKCS7,
+                    include_timestamp=True,
+                    document_id=str(record.export_id),
+                    document_type="ACCOUNTING_CHECK_EXPORT",
+                    signer_user_id=user_uuid,
+                    signing_reason="Exportación de comprobante contable",
+                )
+                signature_value = sig.digital_signature
+            except Exception:
+                pass
+
 
         processing_ms = int((time.time() - t0) * 1000)
 
-        record = self.repo.create_export(
-            db,
-            check_id=payload.check_id,
-            tenant_id=tenant_id,
-            requested_by=requested_by,
-            export_format=payload.format,
-            export_name=export_name,
-            status="COMPLETED",
-            file_size_bytes=len(zip_bytes),
-            file_hash=file_hash,
-            digital_signature=signature_value,
-            file_blob=zip_bytes,
-        )
 
         export_id = str(record.export_id)
 

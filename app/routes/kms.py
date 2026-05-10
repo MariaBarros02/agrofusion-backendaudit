@@ -1484,7 +1484,7 @@ def query_signatures_rfint19(
         signer_name=signer_name,
         search_q=q,
         document_type=document_type,
-        audit_export_only=audit_export_only,
+        audit_export_only=False,
         key_algorithm=key_algorithm,
         validation_status=validation_status,
         limit=limit,
