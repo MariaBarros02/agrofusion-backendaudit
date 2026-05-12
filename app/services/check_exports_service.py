@@ -32,7 +32,7 @@ from app.services.kms_service import KmsService
 from app.services.permissions_service import PermissionsService
 
 
-EXPORT_PERMISSION = "044"
+EXPORT_PERMISSION = "047"
 
 
 class CheckExportsService:
